@@ -159,6 +159,7 @@ def compute_stats(df: pd.DataFrame) -> dict:
     # --- Range stats ---
     asia_range_median = df["asia_range"].median()
     london_range_median = df["london_range"].median()
+    ny_range_median = df["ny_range"].median()
 
     # --- London breaks Asia ---
     london_breaks_asia = (
@@ -194,6 +195,7 @@ def compute_stats(df: pd.DataFrame) -> dict:
         "ny_range_avg":     df["ny_range"].mean(),
         "asia_range_median":   asia_range_median,
         "london_range_median": london_range_median,
+        "ny_range_median": ny_range_median,
         "asia_range_max":   df["asia_range"].max(),
         "london_range_max": df["london_range"].max(),
         "ny_range_max":     df["ny_range"].max(),
