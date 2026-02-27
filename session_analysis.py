@@ -372,7 +372,7 @@ with tab1:
         x=sessions_list,
         y=max_ranges,
         name="Max",
-        marker_color=[c + "44" for c in colors_list],
+        marker_color=[f"rgba({int(c[1:3],16)},{int(c[3:5],16)},{int(c[5:7],16)},0.25)" for c in colors_list],
         text=[fmt_range(v) for v in max_ranges],
         textposition="outside",
     ))
