@@ -1,0 +1,9 @@
+git init (for new folders outside of current)
+git touch
+git status
+git pull (combo of git fetch and git merge)
+git branch [name]
+git checkout [name]
+git add -A
+git commit -m "some text"
+git push origin [branch - usually main for me since I'm solo]
