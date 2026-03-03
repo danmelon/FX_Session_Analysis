@@ -17,6 +17,8 @@ from tabulate import tabulate
 import warnings
 warnings.filterwarnings("ignore")
 
+from statsmodels.stats.multitest import multipletests
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG — match your Streamlit app
 # ─────────────────────────────────────────────────────────────────────────────
@@ -276,6 +278,44 @@ if __name__ == "__main__":
     print(f"  T2 significant (p<.05): {sig_t2}/{len(df_results)}  — small London → NY breaks more")
     print(f"  T3 significant (p<.05): {sig_t3}/{len(df_results)}  — NY reversal ≠ 50/50")
     print("="*65 + "\n")
+
+    # ── Multiple Testing Correction ───────────────────────────────────────────────
+    print("\n" + "="*65)
+    print("  MULTIPLE TESTING CORRECTION")
+    print("="*65)
+
+    # Collect all p-values in order for our Bonferroni & Bejamini-Hochberg
+    p_values = []
+    labels = []
+    for _, row in df_results.iterrows(): # The _ just replaces the 'i' which we usually use and the ',' unpacks the tuple.
+        for test, col in [("T1", "T1 p-value"), ("T2", "T2 p-value"), ("T3", "T3 p-value")]:
+            p_values.append(float(row[col]))
+            labels.append(f"{row['Pair']} — {test}")
+
+    p_array = np.array(p_values)
+
+    # Bonferroni
+    bonf_reject, bonf_corrected, _, _ = multipletests(p_array, alpha=0.05, method="bonferroni")
+
+    # Benjamini-Hochberg
+    bh_reject, bh_corrected, _, _ = multipletests(p_array, alpha=0.05, method="fdr_bh")
+
+    # Build results table
+    correction_df = pd.DataFrame({
+    "Test":               labels,
+    "Raw p-value":        [f"{p:.2e}" for p in p_array],
+    "Bonferroni p":       [f"{p:.2e}" for p in bonf_corrected],
+    "Bonferroni sig":     ["✓" if r else "✗" for r in bonf_reject],
+    "BH p":               [f"{p:.2e}" for p in bh_corrected],
+    "BH sig":             ["✓" if r else "✗" for r in bh_reject],
+    })
+
+    print(tabulate(correction_df, headers="keys", tablefmt="rounded_outline", showindex=False))
+
+    print(f"\n  Bonferroni — surviving tests: {bonf_reject.sum()}/30")
+    print(f"  BH          — surviving tests: {bh_reject.sum()}/30")
+    print(f"\n  Adjusted significance threshold (Bonferroni): p < {0.05/len(p_array):.4f}")
+
 
     # ── Save to CSV ───────────────────────────────────────────────────────────
     out_path = "session_significance_results.csv"
