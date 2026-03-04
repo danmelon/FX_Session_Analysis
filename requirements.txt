@@ -26,10 +26,3 @@ typing_extensions==4.15.0
 urllib3==2.6.3
 websockets==16.0
 yfinance==1.2.0
-plotly==6.6.0
-streamlit>=1.32.0
-yfinance>=0.2.38
-pandas>=2.0.0
-numpy>=1.26.0
-plotly>=5.19.0
-pytz>=2024.1
