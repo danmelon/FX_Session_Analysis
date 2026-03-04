@@ -26,3 +26,6 @@ typing_extensions==4.15.0
 urllib3==2.6.3
 websockets==16.0
 yfinance==1.2.0
+plotly==6.6.0
+streamlit==1.55.0
+
