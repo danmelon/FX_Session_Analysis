@@ -34,6 +34,12 @@ THE P VALUE:
 > IT TELLS US PROBABILITY OF SEEING DATA AT LEAST THIS EXTREME IF THE NULL HYPOTHESIS WERE TRUE.
 
 
+Chi Square Assumptions:
+    > Simple random sample - data sampled from fixed distribution where each member of the population of the given sample size has an equal probability of selection.
+    > Expected cell count > 5
+    > Independence
+
+
 Findings:
 
 > For T1: 'Does a small Asia range increase London breakout probability'?

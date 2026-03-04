@@ -1,0 +1,33 @@
+The Problem with P-Values alone:
+
+> The P-Value tells us whether an effect is real, but nothing about how big that effect is.
+> With enough data almost anything becomes statistically significant...
+    > If we had 10,000 trading days a completely trivial difference in break rates would give you p < 0.05.
+        > Explanation: as sample size n increases, the "standard error" decreases.
+            > i.e. the more data we have, the better the maths becomes at detecting even the tiniest deviations from the norm.
+            > With 20 days of data you need an obvious win rate to prove it's not luck. But with 10,000 days of data, the noise averages out so perfectly the test can predict a very tiny edge.
+                > With only very small edges, after taking into account commission and spread, we might not actually make profit on the signal...
+                    > P-value: "I am sure this coin is slightly weighted"
+                    > Effect size: "This coin is weighted enough to actually make us large returns"
+    > This is why effect size matters.
+
+What Cramer's V measures:
+
+    > Number between 0 and 1 that measures the strength of association in a contingency table regardless of sample size.
+    > V = 0.0 - No association whatsoever
+    > V = 0.1 - weak
+    > V = 0.3 - moderate
+    > V = 0.5+ - strong
+
+    >> Formula:
+        > V = sqrt(x^2 / (n*(k-1)))
+            > x^2 is chi-squared statistic
+            > n is total observations
+            > k is the smallest number of rows or columns (in our 2x2 table this is always 2)
+                > in our 2x2 table's case > V = sqrt(x^2/n)
+
+
+What to expect:
+
+    > In financial data Cramer's V values tend to be low.
+    > Even a V of 0.15 represents a meaningful and potentially tradable edge.
