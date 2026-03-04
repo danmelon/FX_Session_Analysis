@@ -108,11 +108,13 @@ def run_chi_squared(a: int, b: int, c: int, d: int):
         # Fisher's exact is more reliable with small samples
         _, p = fisher_exact(table)
         test_used = "Fisher"
+        chi2_stat = None  # Fisher doesn't produce a chi2 statistic
+
     else:
-        _, p, _, _ = chi2_contingency(table)
+        chi2_stat, p, _, _ = chi2_contingency(table)
         test_used = "Chi-sq"
 
-    return p, test_used
+    return p, test_used, chi2_stat
 
 
 def analyse_pair(pair_name: str, ticker: str) -> dict | None:
@@ -147,7 +149,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
     c1 = int(( large_asia &  london_breaks).sum())   # large asia, london breaks
     d1 = int(( large_asia & ~london_breaks).sum())   # large asia, london holds
 
-    p1, test1 = run_chi_squared(a1, b1, c1, d1)
+    p1, test1, chi2_1 = run_chi_squared(a1, b1, c1, d1)
 
     break_rate_small_asia = a1 / (a1 + b1) * 100 if (a1 + b1) > 0 else 0
     break_rate_large_asia = c1 / (c1 + d1) * 100 if (c1 + d1) > 0 else 0
@@ -164,7 +166,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
     c2 = int(( large_london &  ny_breaks).sum())
     d2 = int(( large_london & ~ny_breaks).sum())
 
-    p2, test2 = run_chi_squared(a2, b2, c2, d2)
+    p2, test2, chi2_2 = run_chi_squared(a2, b2, c2, d2)
 
     break_rate_small_london = a2 / (a2 + b2) * 100 if (a2 + b2) > 0 else 0
     break_rate_large_london = c2 / (c2 + d2) * 100 if (c2 + d2) > 0 else 0
@@ -179,7 +181,30 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
     # Frame as chi-squared vs expected 50/50
     rev_count  = int(ny_reverses.sum())
     cont_count = n - rev_count
-    p3, test3  = run_chi_squared(rev_count, cont_count, n // 2, n - n // 2)
+    p3, test3, chi2_3  = run_chi_squared(rev_count, cont_count, n // 2, n - n // 2)
+
+    # Cramer's V Calculations
+
+    def cramers_v(chi2_stat, n):
+        if chi2_stat is None:
+            return None
+        return np.sqrt(chi2_stat / n)
+    
+    v1 = cramers_v(chi2_1, n)
+    v2 = cramers_v(chi2_2, n)
+    v3 = cramers_v(chi2_3, n)
+
+    def interpret_v(v):
+        if v is None:
+            return "N/A (Fisher)"
+        elif v < 0.1:
+            return "negligible"
+        elif v < 0.3:
+            return "Weak"
+        elif v < 0.5:
+            return "moderate"
+        else:
+            return "strong"
 
     return {
         "Pair":                   pair_name,
@@ -203,6 +228,12 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
         "T3 p-value":             p3,
         "T3 test":                test3,
         "T3 significant":         "✓" if p3 < 0.05 else "✗",
+        "T1 Cramers V":      f"{v1:.3f}" if v1 is not None else "N/A",
+        "T1 Effect":         interpret_v(v1),
+        "T2 Cramers V":      f"{v2:.3f}" if v2 is not None else "N/A",
+        "T2 Effect":         interpret_v(v2),
+        "T3 Cramers V":      f"{v3:.3f}" if v3 is not None else "N/A",
+        "T3 Effect":         interpret_v(v3),
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -315,6 +346,25 @@ if __name__ == "__main__":
     print(f"\n  Bonferroni — surviving tests: {bonf_reject.sum()}/30")
     print(f"  BH          — surviving tests: {bh_reject.sum()}/30")
     print(f"\n  Adjusted significance threshold (Bonferroni): p < {0.05/len(p_array):.4f}")
+
+
+    # Print Cramer's V results:
+    print("\n" + "─"*65)
+    print("EFFECT SIZES — Cramér's V")
+    print("─"*65)
+    effect_cols = ["Pair", "Days",
+                "T1 Cramers V", "T1 Effect",
+                "T2 Cramers V", "T2 Effect",
+                "T3 Cramers V", "T3 Effect"]
+    print(tabulate(df_results[effect_cols], headers="keys", tablefmt="rounded_outline", showindex=False))
+
+    # Summary
+    print(f"\n  Average V — T1 (small Asia → London breaks): "
+        f"{df_results['T1 Cramers V'].replace('N/A', np.nan).astype(float).mean():.3f}")
+    print(f"  Average V — T2 (small London → NY breaks):   "
+        f"{df_results['T2 Cramers V'].replace('N/A', np.nan).astype(float).mean():.3f}")
+    print(f"  Average V — T3 (NY reversal vs 50/50):       "
+        f"{df_results['T3 Cramers V'].replace('N/A', np.nan).astype(float).mean():.3f}")
 
 
     # ── Save to CSV ───────────────────────────────────────────────────────────
