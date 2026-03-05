@@ -1,0 +1,15 @@
+Why chronological and not random?
+    > Most Machine learning methods split data randomly, but that's wrong for time series financial data.
+    > If we split randomly, we might end up training on data from December and test on January, meaning the model has effectively seen the future.
+        > The is called the 'lookahead bias'.
+    > Chronological means:
+        > Day 1-----Day 210 (train 70%), then Day 211----Day 300 (test 30%)
+        > We build our findings on the train set, then apply them untouched to the test set.
+        > If the effect holds out-of-sample, we have strong evidence of a structural relationship.
+            > If it doesn't hold, then it suggests that the effect was a feature of that specific time period rather than persistent.
+
+Steps:
+1. Split 70/30
+2. Calculate conditional probabilities & run Chi Square on Train set.
+3. Apply the same median threshold from the train set to the test set.
+4. Compare whether the break rates and significance hold up on the test.

@@ -1,0 +1,9 @@
+> Assuming NY & London have such a strong relationship because they have overlapping periods?
+> Do we need to run out of sample validation on the tests that don't hold up to Chi Square & Cramer V?
+    > Seems a bit pointless? Would we ever find that results pass 70/30 but fail basic testing?
+        > actually... isn't the 70/30 split used to further analyse based on the prior tests... not actually doing more tests?
+            > Yes, they are testing different things, so not redundant.
+                > Failing Chi square but passing OOS: Effect is consistent through time but too small to reach significance in either window alone.
+                > Pass Chi square but fail OOS: Effect was real in sample period but isn't structural (possibly regime specific).
+                > Fails both : just noise
+                > Passes both : very strong signal.
