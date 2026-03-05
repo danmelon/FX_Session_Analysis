@@ -1,0 +1,52 @@
+We use the Chi Square test to find out whether there is a statistically significant difference between observed categorical data and expected frequencies.
+    > Measures how a model compares to actual observed data.
+    > In our case study on stock trading sessions:
+        > We have the % time a session breaks previous
+        > Does the row (Asia small vs Large) have any relationship with the outcome (London Breaks or Holds)
+            > Is the break rate GENUINELY diffrent between the two groups, or could the differences be just random chance in our sample
+        > For this we Use Chi-Squared:
+            > 'If there was absolutely NO relationship between Asia range size and London breaking, what would we EXPECT the table to look like?
+                > expected = (row total * column total)/grand total
+                    > So if 60% of all days London breaks Asia regardless of Asia's range, we would expect roughly 60% of small-Asia days and 60% of Large-Asia days to result in a break.
+                        > This is the NULL HYPOTHESIS
+                    > We then calculate how far your OBSERVED counts deviate from those Expected Counts across our 2x2 table.
+                        > x^2 = sum(observed - expected)^2 / expected
+                    > The bigger our X^2 value, the more our data deviates from what we would see if there were NO relationship.
+                        > Look up this x^2 value against the distribution to get a p-value which tells us the probability of seeing a deviation this large (or larger) purely by chance.
+                        > If p<0.05, we say: there is a less than 5% chance this difference is just noise, so we reject the null hypothesis and conclude the rationship is statistically significant.
+
+Because the Chi Squared is an approximation - it becomes unreliable when our expected cell counts are too small...
+    > rule of thumb = any cell below 5.
+    > Imagine we have 40 days of data and only split into 4 groups - say ((10*10)/40) = 2.5 < 5
+So we use Fisher's Exact Test.
+    > does not use approximation. 
+        > Instead calc's exact probability of getting observed table or anything more extreme.
+    > Does this by working through every possible arrangement of the same row & column totals using the HYPERGEOMETRIC DISTRIBUTION.
+        > Intuition:
+            > We have bag with (a+b) small-Asia days and (c+d) large-Asia days.
+            > Draw (a+c) "London Breaks" outcomes at random.
+            > What's the probability that at least 'a' of these breaks fall in the small-Asia group just by chance?
+            > Fisher calcs this.
+
+THE P VALUE:
+
+> DOES NOT TELL US THE PROBABILITY THAT OUR HYPOTHESIS IS TRUE.
+> IT TELLS US PROBABILITY OF SEEING DATA AT LEAST THIS EXTREME IF THE NULL HYPOTHESIS WERE TRUE.
+
+
+Chi Square Assumptions:
+    > Simple random sample - data sampled from fixed distribution where each member of the population of the given sample size has an equal probability of selection.
+    > Expected cell count > 5
+    > Independence
+
+
+Findings:
+
+> For T1: 'Does a small Asia range increase London breakout probability'?
+    > Significant in 6/10 pairs. 2 Fisher tests used, both times found insignificant(usd/cad & gbp/usd).
+
+> For T2: 'Does a small London range increase NY breakout probability'?
+    > Significant in 1/10 pairs. Enough counts for Chi Squared to be used in all pairs.
+
+> For T3: 'Is NY's reversal rate of London statistically different from 50/50'?
+    > Significant in 10/10 pairs. No Fisher test needed.

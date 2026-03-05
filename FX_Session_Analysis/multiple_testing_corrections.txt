@@ -1,0 +1,44 @@
+The problem:
+    > We are running 30 tests (10 pairs & 3 tests for each pair).
+    > At p < 0.05 we are saying: "I accept that there's a 5% chance this result is a false positive"
+        > When we're running 30 tests, the 5% risk applies to each individual test.
+        > Probability of getting at least one false positive across all 30 tests is: 1 - (0.95)^30 = 78%
+            > So Without correction there is a 78% chance at least one of our significant results is just noise.
+            > This is the multiple comparisons problem (or "p-hacking").
+
+The Two Corrections:
+    Bonferroni (simpler):
+        > Divides significance threshold by the number of tests:
+            > adjusted threshold = 0.05 / 30 = 0.00167
+            > now, any result needs p < 0.00167 to reject the null hypothesis.
+            > This is a conservative correction as it assumes all our tests are independent (which they are not in our case).
+                    > FX pairs are correlated with each other to varying degrees.
+    
+    Benjamini-Hochberg (BH):
+        > Less conservative & more appropriate for our tests.
+        > Rather than controlling the probability of ANY false positive, it controls the false positive discovery rate.
+            > (the expected proportion of your significant results that are false positives)
+        > It works by:
+            1. Ranking all our p-values from smallest to largest.
+            2. For each p-value at rank i, checking whether:
+                > p-value =< (i/30) * 0.05
+            3. Finding the largest p-value that passes, and calling everything below it significant.
+            
+            > More appropriate for us because we're not trying to prove every single finding is real
+                > We are just trying to ensure that among our significant results, most of them are genuine.
+
+
+> We will do both tests and examine the differences.
+> We would expect less of the tests to 'survive' the Bonferroni tests since it has more conservative assumptions.
+
+
+For Bonferroni : Could compare each value to 0.00167, but instead we will use multipletests(p_array, alpha=0.05, method="bonferroni")
+For Benjamini-Hochberg : multipletests(p_array, alpha=0.05, method="fdr_bh")
+
+
+
+Analysis to be done:
+
+- Which specific tests survive both corrections — these would be our most robust (confident?)
+- Which survive BH but not Bonferroni
+- Whether the 'survivors' cluster around particular pairs or particular test types (T1/T2/T3) — that tells us where the real signal is.
