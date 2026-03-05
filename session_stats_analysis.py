@@ -205,6 +205,8 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
             return "moderate"
         else:
             return "strong"
+        
+    oos = run_oos_validation(df)
 
     return {
         "Pair":                   pair_name,
@@ -234,7 +236,113 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
         "T2 Effect":         interpret_v(v2),
         "T3 Cramers V":      f"{v3:.3f}" if v3 is not None else "N/A",
         "T3 Effect":         interpret_v(v3),
+
+        # Train set
+        "OOS Train n":                    oos["Train"]["n"],
+        "OOS Train T1 break (small)":     oos["Train"]["T1 break (small asia)"],
+        "OOS Train T1 break (large)":     oos["Train"]["T1 break (large asia)"],
+        "OOS Train T1 p":                 f"{oos['Train']['T1 p']:.2e}",
+        "OOS Train T1 V":                 f"{oos['Train']['T1 V']:.3f}" if oos['Train']['T1 V'] else "N/A",
+        "OOS Train T2 break (small)":     oos["Train"]["T2 break (small london)"],
+        "OOS Train T2 break (large)":     oos["Train"]["T2 break (large london)"],
+        "OOS Train T2 p":                 f"{oos['Train']['T2 p']:.2e}",
+        "OOS Train T2 V":                 f"{oos['Train']['T2 V']:.3f}" if oos['Train']['T2 V'] else "N/A",
+        "OOS Train T3 reversal rate":     oos["Train"]["T3 reversal rate"],
+        "OOS Train T3 p":                 f"{oos['Train']['T3 p']:.2e}",
+        "OOS Train T3 V":                 f"{oos['Train']['T3 V']:.3f}" if oos['Train']['T3 V'] else "N/A",
+        # Test set
+        "OOS Test n":                     oos["Test"]["n"],
+        "OOS Test T1 break (small)":      oos["Test"]["T1 break (small asia)"],
+        "OOS Test T1 break (large)":      oos["Test"]["T1 break (large asia)"],
+        "OOS Test T1 p":                  f"{oos['Test']['T1 p']:.2e}",
+        "OOS Test T1 V":                  f"{oos['Test']['T1 V']:.3f}" if oos['Test']['T1 V'] else "N/A",
+        "OOS Test T2 break (small)":      oos["Test"]["T2 break (small london)"],
+        "OOS Test T2 break (large)":      oos["Test"]["T2 break (large london)"],
+        "OOS Test T2 p":                  f"{oos['Test']['T2 p']:.2e}",
+        "OOS Test T2 V":                  f"{oos['Test']['T2 V']:.3f}" if oos['Test']['T2 V'] else "N/A",
+        "OOS Test T3 reversal rate":      oos["Test"]["T3 reversal rate"],
+        "OOS Test T3 p":                  f"{oos['Test']['T3 p']:.2e}",
+        "OOS Test T3 V":                  f"{oos['Test']['T3 V']:.3f}" if oos['Test']['T3 V'] else "N/A",
     }
+
+def run_oos_validation(df: pd.DataFrame, train_pct: float = 0.7) -> dict:
+
+    def cramers_v(chi2_stat, n):
+        if chi2_stat is None:
+            return None
+        return np.sqrt(chi2_stat / n)
+    
+    """
+    Chronological 70/30 split. Calculates conditional probabilities
+    on train set, applies same thresholds to test set.
+    """
+    split_idx = int(len(df) * train_pct)
+    train = df.iloc[:split_idx]
+    test  = df.iloc[split_idx:]
+
+    # ── Thresholds from TRAIN set only ──
+    asia_median_train   = train["asia_range"].median()
+    london_median_train = train["london_range"].median()
+
+    results = {}
+
+    for split_name, split_df in [("Train", train), ("Test", test)]:
+        n = len(split_df)
+
+        # Test 1 — small Asia → London breaks
+        small_asia     = split_df["asia_range"]   < asia_median_train
+        large_asia     = ~small_asia
+        london_breaks  = (split_df["london_high"] > split_df["asia_high"]) | \
+                         (split_df["london_low"]  < split_df["asia_low"])
+
+        a1 = int(( small_asia &  london_breaks).sum())
+        b1 = int(( small_asia & ~london_breaks).sum())
+        c1 = int(( large_asia &  london_breaks).sum())
+        d1 = int(( large_asia & ~london_breaks).sum())
+
+        p1, test1, chi2_1 = run_chi_squared(a1, b1, c1, d1)
+        v1 = cramers_v(chi2_1, n)
+
+        # Test 2 — small London → NY breaks
+        small_london  = split_df["london_range"] < london_median_train
+        large_london  = ~small_london
+        ny_breaks     = (split_df["ny_high"] > split_df["london_high"]) | \
+                        (split_df["ny_low"]  < split_df["london_low"])
+
+        a2 = int(( small_london &  ny_breaks).sum())
+        b2 = int(( small_london & ~ny_breaks).sum())
+        c2 = int(( large_london &  ny_breaks).sum())
+        d2 = int(( large_london & ~ny_breaks).sum())
+
+        p2, test2, chi2_2 = run_chi_squared(a2, b2, c2, d2)
+        v2 = cramers_v(chi2_2, n)
+
+        # Test 3 — NY reversal vs 50/50
+        london_bull  = split_df["london_direction"] == "Bullish"
+        ny_bull      = split_df["ny_direction"]     == "Bullish"
+        ny_reverses  = (london_bull != ny_bull)
+        rev_count    = int(ny_reverses.sum())
+        cont_count   = n - rev_count
+
+        p3, test3, chi2_3 = run_chi_squared(rev_count, cont_count, n // 2, n - n // 2)
+        v3 = cramers_v(chi2_3, n)
+
+        results[split_name] = {
+            "n":                          n,
+            "T1 break (small asia)":      f"{a1/(a1+b1)*100:.1f}%" if (a1+b1) > 0 else "N/A",
+            "T1 break (large asia)":      f"{c1/(c1+d1)*100:.1f}%" if (c1+d1) > 0 else "N/A",
+            "T1 p":                       p1,
+            "T1 V":                       v1,
+            "T2 break (small london)":    f"{a2/(a2+b2)*100:.1f}%" if (a2+b2) > 0 else "N/A",
+            "T2 break (large london)":    f"{c2/(c2+d2)*100:.1f}%" if (c2+d2) > 0 else "N/A",
+            "T2 p":                       p2,
+            "T2 V":                       v2,
+            "T3 reversal rate":           f"{ny_reverses.mean()*100:.1f}%",
+            "T3 p":                       p3,
+            "T3 V":                       v3,
+        }
+
+    return results
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN
@@ -365,6 +473,41 @@ if __name__ == "__main__":
         f"{df_results['T2 Cramers V'].replace('N/A', np.nan).astype(float).mean():.3f}")
     print(f"  Average V — T3 (NY reversal vs 50/50):       "
         f"{df_results['T3 Cramers V'].replace('N/A', np.nan).astype(float).mean():.3f}")
+    
+    
+print("\n" + "="*65)
+print("  OUT-OF-SAMPLE VALIDATION (70/30 CHRONOLOGICAL SPLIT)")
+print("="*65)
+
+for _, row in df_results.iterrows():
+    print(f"\n  {row['Pair']}")
+    print(f"  {'─'*40}")
+
+    oos_table = {
+        "Metric": [
+            "N (days)",
+            "T1 break small Asia", "T1 break large Asia", "T1 p-value", "T1 Cramér's V",
+            "T2 break small London", "T2 break large London", "T2 p-value", "T2 Cramér's V",
+            "T3 reversal rate", "T3 p-value", "T3 Cramér's V",
+        ],
+        "Train (70%)": [
+            row["OOS Train n"],
+            row["OOS Train T1 break (small)"], row["OOS Train T1 break (large)"],
+            row["OOS Train T1 p"], row["OOS Train T1 V"],
+            row["OOS Train T2 break (small)"], row["OOS Train T2 break (large)"],
+            row["OOS Train T2 p"], row["OOS Train T2 V"],
+            row["OOS Train T3 reversal rate"], row["OOS Train T3 p"], row["OOS Train T3 V"],
+        ],
+        "Test (30%)": [
+            row["OOS Test n"],
+            row["OOS Test T1 break (small)"], row["OOS Test T1 break (large)"],
+            row["OOS Test T1 p"], row["OOS Test T1 V"],
+            row["OOS Test T2 break (small)"], row["OOS Test T2 break (large)"],
+            row["OOS Test T2 p"], row["OOS Test T2 V"],
+            row["OOS Test T3 reversal rate"], row["OOS Test T3 p"], row["OOS Test T3 V"],
+        ],
+    }
+    print(tabulate(oos_table, headers="keys", tablefmt="rounded_outline", showindex=False))
 
 
     # ── Save to CSV ───────────────────────────────────────────────────────────
