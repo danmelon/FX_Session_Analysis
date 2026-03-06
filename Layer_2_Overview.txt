@@ -1,0 +1,50 @@
+The Goal:
+    > Shifting from describing what happened to predicting what will happen.
+        > Build a classifier that takes session features as input and predicts a binary outcome
+            > e.g. whether NY will continue or reverse london's direction.
+
+Step 1 - Feature Engineering:
+    > Transform raw session data into predictive features
+        >e.g.:
+            - Asia range as a percentile of its own 20-day rolling history (normalised, so comparable across pairs and time)
+            - London range / Asia range ratio
+            - Whether London opened above or below Asia's midpoint
+            - Asia and London direction (bullish/bearish)
+            - Day of the week (Monday sessions behave differently to Friday)
+            - London Range as a percentile of its 20-day history
+
+Step 2 - Define target variable:
+    > Binary outcome we are trying to predict (e.g. 1 = NY continues London direction, 0 = NY reverses London)
+
+Step 3 - Logistic Regression:
+    > Fast and good baseline for further analysis.
+    > Coeffs tell us directly which featurs are pushing the prediction in each direction
+
+Step 4 - XGBoost/LightGBM:
+    > Captures nonlinear relationships that logistic regression misses (how?)
+        > Logistic regression draws a straight decision boundary through feature space, learns a weight for each feature and combines them.
+            > Linear.
+        > XGBoost & LightGBM are <Gradient boosted decision tree> models. 
+            > Rather than linear, they build hundred of small decision trees where each learns errors from prior:
+                Is Asia range small?
+                    YES → Is London bullish?
+                            YES → predict continuation (70%)
+                            NO  → predict reversal (60%)
+                    NO  → Is London range large?
+                            YES → predict continuation (55%)
+                            NO  → predict reversal (52%)
+    > More powerful but less interpretable, so we add SHAP values on top
+
+Step 5 - Time series cross-validation:
+    > Use walk-forward approach where you train on the past and test on the immediate future, rolling forward in windows
+
+Step 6 - SHAP Values:
+    > Explains which features drove each individual prediction.
+    > Clear visual overview and answers "why did the model predict this"
+
+Step 7 - Probability calibration:
+    > Checks whether our model's predicted probabilities are trustworthy
+        > If the model says 70% confidence does it actually win 70% of the time?
+
+
+    
