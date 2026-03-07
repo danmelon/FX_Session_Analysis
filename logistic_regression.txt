@@ -1,0 +1,20 @@
+What does Logistic Regression do?
+    > Takes our engineered features as input and outputs a probability between 0 and 1 for your target variable.
+        > input: asia_range_percentile, london_bullish, day_of_week, etc...
+        > output: Probability that NY continues London's direction
+
+    > So for a given day it might say "there's a 68% chance NY continues London today" based on the combination of features it sees.
+
+Why start here?
+    > Interpretable - Each feature gets a coefficient that tells you directly whether it pushes the prediction towards continuation or reversal, and by how much.
+    > Baseline - It sets a benchmark accuracy. 
+        > If XGBoost later gets 62% accuracy and logistic regression gets 60%, the extra complexity of XGBoost barely added anything.
+        > If XGBoost gets 72% there's clearly nonlinear signal worth capturing.
+
+    
+What success looks like:
+    > Completely random model would get 50% accuracy on our binary target since it's a coin flip. 
+        > Anything meaningfully above 50% after proper cross-validation is a genuine finding.
+            > Wouldn't expect anything like 80%... 55-60% is respectable & potentially tradeable for financial data.
+        
+

@@ -1,4 +1,21 @@
 > Assuming NY & London have such a strong relationship because they have overlapping periods?
+    > This is a valid concern for range analysis - > London's high-low is sometimes set DURING overlap period
+        > So when we say "NY broke London range" it might be that NY broke it during the overlap when both were trading.
+    > For directional analysis - > overlap of 4 hours, the two aren't truly independent observations.
+    > For Continuation test - > This is where the issue is most pronounced - 
+        > If London closes bullish partly because NY was bullish in the overlap, then finding NY continues London is somewhat CIRCULAR.
+            > Partially predicting NY off itself...
+
+                > > All this reduces strength of findings but does not invalidate them entirely.
+                    > Overlap is not taking up more than half the session.
+                    > Partially contained issue.
+
+                    >>> We could fix this by redefining the session times where there is no overlap:
+                        > Tradeoff would be smaller ranges since using shorter windows, and slightly less data to work with.
+
+                        > This could be explored as an extension of the current project after we are done.
+                        
+
 > Do we need to run out of sample validation on the tests that don't hold up to Chi Square & Cramer V?
     > Seems a bit pointless? Would we ever find that results pass 70/30 but fail basic testing?
         > actually... isn't the 70/30 split used to further analyse based on the prior tests... not actually doing more tests?
