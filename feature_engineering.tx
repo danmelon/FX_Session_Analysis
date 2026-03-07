@@ -1,0 +1,35 @@
+What makes a good feature?
+    > Predictive - it has a GENUINE relationship with our target variable
+    > Available at prediction time - can only use information that would have been known BEFORE NY open.
+    > Stationary - It means the same thing across different time periods and pairs. Raw price levels are useless, but ratios and percentiles are good.
+
+
+Features we will engineer:
+
+Range Based:
+    > Asia Range Percentile - Where today's Asia range sits within its own 20-day rolling history.
+        A value of 0.9 means today was one fo the largest Asia sessions in the past month.
+            This is better than raw range because it's normalised across pairs and time periods.
+    > London Range Percentile - ^ Same as above, except for London.
+    > London Asia Range Ratio - London range divided by Asia range. A ratio > 1 means London expanded beyond Asia.
+                                        Ration < 1 means London was quieter than Asia.
+    > Asia Range Expanding - Binary flag, 1 if today's Asia range is larger than yesterday's.
+
+
+Discretional:
+    > Asia Bullish - 1 if Asia closed above it's open, 0 if not.
+    > London Bullish - ^ Same for London
+    > Asia London Agree - 1 if both sessions moved in the same direction, 0 if they disagreed
+
+Positional:
+    > London Open Above Asia Mid - Did London open above the midpoint of Asia's range? 
+        This tells us whether London started the session with bullish / bearish positioning relative to Asia.
+    > Asia Mid to London Close - How far London's close is from Asia's midpoint, normalised by Asia's range.
+        Captures how much London extended away from equilibrium
+
+Time-Based:
+    > Day of Week - Monday to Friday as integers. Session dynamics genuinely differ by day, particularly Monday (gap opens) and Friday (position squaring into weekend)
+
+Target Variable:
+    > NY Continues London - 1 if NY closes in the same direction as London, 0 if it reverses
+
