@@ -116,6 +116,59 @@ def run_chi_squared(a: int, b: int, c: int, d: int):
 
     return p, test_used, chi2_stat
 
+def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Engineers predictive features from session OHLC data.
+    All features use only information available before NY opens.
+    """
+    fe = df.copy()
+
+    # ── Range-based features ──────────────────────────────────────────────
+    # Percentile of today's range within rolling 20-day window
+    fe["asia_range_percentile"] = (
+        fe["asia_range"]
+        .rolling(20)
+        .apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1], raw=False)
+    )
+    fe["london_range_percentile"] = (
+        fe["london_range"]
+        .rolling(20)
+        .apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1], raw=False)
+    )
+
+    # London range relative to Asia range
+    fe["london_asia_range_ratio"] = fe["london_range"] / fe["asia_range"].replace(0, np.nan)
+
+    # Is today's Asia range larger than yesterday's
+    fe["asia_range_expanding"] = (fe["asia_range"] > fe["asia_range"].shift(1)).astype(int)
+
+    # ── Directional features ──────────────────────────────────────────────
+    fe["asia_bullish"]       = (fe["asia_direction"]   == "Bullish").astype(int)
+    fe["london_bullish"]     = (fe["london_direction"] == "Bullish").astype(int)
+    fe["asia_london_agree"]  = (fe["asia_bullish"] == fe["london_bullish"]).astype(int)
+
+    # ── Positional features ───────────────────────────────────────────────
+    # Did London open above the midpoint of Asia's range
+    asia_mid = (fe["asia_high"] + fe["asia_low"]) / 2
+    fe["london_open_above_asia_mid"] = (fe["london_open"] > asia_mid).astype(int)
+
+    # How far London close is from Asia midpoint, normalised by Asia range
+    fe["asia_mid_to_london_close"] = (
+        (fe["london_close"] - asia_mid) / fe["asia_range"].replace(0, np.nan)
+    )
+
+    # ── Time-based features ───────────────────────────────────────────────
+    fe["day_of_week"] = pd.to_datetime(fe.index).dayofweek  # 0=Monday, 4=Friday
+
+    # ── Target variable ───────────────────────────────────────────────────
+    fe["ny_continues_london"] = (
+        fe["london_direction"] == fe["ny_direction"]
+    ).astype(int)
+
+    # Drop rows with NaN from rolling calculations
+    fe = fe.dropna()
+
+    return fe
 
 def analyse_pair(pair_name: str, ticker: str) -> dict | None:
     """Run all conditional probability tests for one pair."""
@@ -128,6 +181,11 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
 
     df = build_session_df(hourly)
     n  = len(df)
+
+    df_features = engineer_features(df)
+    print(f"  {pair_name} — {len(df_features)} rows after feature engineering (dropped {n - len(df_features)} for rolling window)")
+    
+
 
     if n < 30:
         print(f"SKIPPED (only {n} days)")
@@ -263,7 +321,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
         "OOS Test T3 reversal rate":      oos["Test"]["T3 reversal rate"],
         "OOS Test T3 p":                  f"{oos['Test']['T3 p']:.2e}",
         "OOS Test T3 V":                  f"{oos['Test']['T3 V']:.3f}" if oos['Test']['T3 V'] else "N/A",
-    }
+    }, df_features
 
 def run_oos_validation(df: pd.DataFrame, train_pct: float = 0.7) -> dict:
 
@@ -356,10 +414,15 @@ if __name__ == "__main__":
     print("="*65 + "\n")
 
     results = []
+    features = {}
+
     for pair_name, ticker in PAIRS.items():
         result = analyse_pair(pair_name, ticker)
-        if result:
-            results.append(result)
+        if result is not None:
+            stats, df_features = result
+            results.append(stats)
+            features[pair_name] = df_features
+
 
     if not results:
         print("No data retrieved. Check your internet connection.")
