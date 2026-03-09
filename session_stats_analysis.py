@@ -19,6 +19,11 @@ warnings.filterwarnings("ignore")
 
 from statsmodels.stats.multitest import multipletests
 
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
+from sklearn.calibration import calibration_curve
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG — match your Streamlit app
 # ─────────────────────────────────────────────────────────────────────────────
@@ -170,6 +175,83 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
 
     return fe
 
+def run_logistic_regression(df_features: pd.DataFrame, pair_name: str) -> dict:
+    """
+    Trains a logistic regression classifier to predict NY continuation.
+    Uses chronological 70/30 split to avoid lookahead bias.
+    """
+
+    FEATURES = [
+        "asia_range_percentile",
+        "london_range_percentile",
+        "london_asia_range_ratio",
+        "asia_range_expanding",
+        "asia_bullish",
+        "london_bullish",
+        "asia_london_agree",
+        "london_open_above_asia_mid",
+        "asia_mid_to_london_close",
+        "day_of_week",
+    ]
+
+    TARGET = "ny_continues_london"
+
+    # ── Chronological split ───────────────────────────────────────────────
+    split_idx = int(len(df_features) * 0.7)
+    train = df_features.iloc[:split_idx]
+    test  = df_features.iloc[split_idx:]
+
+    X_train = train[FEATURES]
+    y_train = train[TARGET]
+    X_test  = test[FEATURES]
+    y_test  = test[TARGET]
+
+    # ── Scale features ────────────────────────────────────────────────────
+    # Logistic regression is sensitive to feature scale so we normalise
+    # Fit scaler on train only — never fit on test data
+    scaler  = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled  = scaler.transform(X_test)
+
+    # ── Train model ───────────────────────────────────────────────────────
+    model = LogisticRegression(max_iter=1000, random_state=42)
+    model.fit(X_train_scaled, y_train)
+
+    # ── Predictions ───────────────────────────────────────────────────────
+    y_pred       = model.predict(X_test_scaled)
+    y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
+
+    # ── Metrics ───────────────────────────────────────────────────────────
+    accuracy = accuracy_score(y_test, y_pred)
+    roc_auc  = roc_auc_score(y_test, y_pred_proba)
+    report   = classification_report(y_test, y_pred, output_dict=True)
+
+    # ── Coefficients ──────────────────────────────────────────────────────
+    # Positive coefficient = pushes towards continuation
+    # Negative coefficient = pushes towards reversal
+    coefficients = pd.DataFrame({
+        "Feature":     FEATURES,
+        "Coefficient": model.coef_[0],
+    }).sort_values("Coefficient", ascending=False)
+
+    # ── Baseline accuracy (majority class) ────────────────────────────────
+    # What accuracy would we get just by always predicting the most common outcome
+    baseline = max(y_test.mean(), 1 - y_test.mean())
+
+    return {
+        "pair":         pair_name,
+        "n_train":      len(train),
+        "n_test":       len(test),
+        "accuracy":     accuracy,
+        "baseline":     baseline,
+        "edge":         accuracy - baseline,
+        "roc_auc":      roc_auc,
+        "coefficients": coefficients,
+        "report":       report,
+        "y_test":       y_test,
+        "y_pred_proba": y_pred_proba,
+    }
+
 def analyse_pair(pair_name: str, ticker: str) -> dict | None:
     """Run all conditional probability tests for one pair."""
     print(f"  Fetching {pair_name} ({ticker})...", end=" ", flush=True)
@@ -266,6 +348,8 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
         
     oos = run_oos_validation(df)
 
+    lr_results = run_logistic_regression(df_features, pair_name)
+
     return {
         "Pair":                   pair_name,
         "Days":                   n,
@@ -321,7 +405,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
         "OOS Test T3 reversal rate":      oos["Test"]["T3 reversal rate"],
         "OOS Test T3 p":                  f"{oos['Test']['T3 p']:.2e}",
         "OOS Test T3 V":                  f"{oos['Test']['T3 V']:.3f}" if oos['Test']['T3 V'] else "N/A",
-    }, df_features
+    }, df_features, lr_results
 
 def run_oos_validation(df: pd.DataFrame, train_pct: float = 0.7) -> dict:
 
@@ -415,13 +499,15 @@ if __name__ == "__main__":
 
     results = []
     features = {}
+    lr_results_all = []
 
     for pair_name, ticker in PAIRS.items():
         result = analyse_pair(pair_name, ticker)
         if result is not None:
-            stats, df_features = result
+            stats, df_features, lr_result = result
             results.append(stats)
             features[pair_name] = df_features
+            lr_results_all.append(lr_result)
 
 
     if not results:
@@ -571,6 +657,33 @@ for _, row in df_results.iterrows():
         ],
     }
     print(tabulate(oos_table, headers="keys", tablefmt="rounded_outline", showindex=False))
+
+print("\n" + "="*65)
+print("  LOGISTIC REGRESSION RESULTS")
+print("="*65)
+
+lr_summary = []
+for r in lr_results_all:
+    lr_summary.append({
+        "Pair":       r["pair"],
+        "N Train":    r["n_train"],
+        "N Test":     r["n_test"],
+        "Accuracy":   f"{r['accuracy']*100:.1f}%",
+        "Baseline":   f"{r['baseline']*100:.1f}%",
+        "Edge":       f"{r['edge']*100:.1f}%",
+        "ROC AUC":    f"{r['roc_auc']:.3f}",
+    })
+
+print(tabulate(pd.DataFrame(lr_summary), headers="keys", 
+               tablefmt="rounded_outline", showindex=False))
+
+print("\n  FEATURE COEFFICIENTS BY PAIR")
+print("  (positive = towards continuation, negative = towards reversal)\n")
+for r in lr_results_all:
+    print(f"  {r['pair']}")
+    print(tabulate(r["coefficients"], headers="keys", 
+                   tablefmt="rounded_outline", showindex=False))
+    print()
 
 
     # ── Save to CSV ───────────────────────────────────────────────────────────
