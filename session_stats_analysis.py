@@ -23,6 +23,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
 from sklearn.calibration import calibration_curve
+from sklearn.model_selection import TimeSeriesSplit
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG — match your Streamlit app
@@ -252,6 +253,81 @@ def run_logistic_regression(df_features: pd.DataFrame, pair_name: str) -> dict:
         "y_pred_proba": y_pred_proba,
     }
 
+def run_walk_forward_cv(df_features: pd.DataFrame, pair_name: str, n_splits: int = 5) -> dict:
+    """
+    Walk-forward expanding window cross-validation.
+    Returns accuracy, ROC AUC, and edge across all folds.
+    """
+
+    FEATURES = [
+        "asia_range_percentile",
+        "london_range_percentile",
+        "london_asia_range_ratio",
+        "asia_range_expanding",
+        "asia_bullish",
+        "london_bullish",
+        "asia_london_agree",
+        "london_open_above_asia_mid",
+        "asia_mid_to_london_close",
+        "day_of_week",
+    ]
+
+    TARGET = "ny_continues_london"
+
+    X = df_features[FEATURES]
+    y = df_features[TARGET]
+
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+
+    fold_results = []
+
+    for fold, (train_idx, test_idx) in enumerate(tscv.split(X), 1):
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+        # Scale — fit on train only
+        scaler         = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled  = scaler.transform(X_test)
+
+        # Train
+        model = LogisticRegression(max_iter=1000, random_state=42)
+        model.fit(X_train_scaled, y_train)
+
+        # Evaluate
+        y_pred       = model.predict(X_test_scaled)
+        y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
+
+        accuracy = accuracy_score(y_test, y_pred)
+        roc_auc  = roc_auc_score(y_test, y_pred_proba)
+        baseline = max(y_test.mean(), 1 - y_test.mean())
+        edge     = accuracy - baseline
+
+        fold_results.append({
+            "fold":       fold,
+            "n_train":    len(train_idx),
+            "n_test":     len(test_idx),
+            "accuracy":   accuracy,
+            "baseline":   baseline,
+            "edge":       edge,
+            "roc_auc":    roc_auc,
+        })
+
+    fold_df = pd.DataFrame(fold_results)
+
+    return {
+        "pair":          pair_name,
+        "fold_df":       fold_df,
+        "mean_accuracy": fold_df["accuracy"].mean(),
+        "mean_baseline": fold_df["baseline"].mean(),
+        "mean_edge":     fold_df["edge"].mean(),
+        "mean_roc_auc":  fold_df["roc_auc"].mean(),
+        "std_accuracy":  fold_df["accuracy"].std(),
+        "std_roc_auc":   fold_df["roc_auc"].std(),
+        "positive_edge_folds": (fold_df["edge"] > 0).sum(),
+        "total_folds":   n_splits,
+    }
+
 def analyse_pair(pair_name: str, ticker: str) -> dict | None:
     """Run all conditional probability tests for one pair."""
     print(f"  Fetching {pair_name} ({ticker})...", end=" ", flush=True)
@@ -349,6 +425,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
     oos = run_oos_validation(df)
 
     lr_results = run_logistic_regression(df_features, pair_name)
+    cv_results = run_walk_forward_cv(df_features, pair_name)
 
     return {
         "Pair":                   pair_name,
@@ -405,7 +482,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
         "OOS Test T3 reversal rate":      oos["Test"]["T3 reversal rate"],
         "OOS Test T3 p":                  f"{oos['Test']['T3 p']:.2e}",
         "OOS Test T3 V":                  f"{oos['Test']['T3 V']:.3f}" if oos['Test']['T3 V'] else "N/A",
-    }, df_features, lr_results
+    }, df_features, lr_results, cv_results
 
 def run_oos_validation(df: pd.DataFrame, train_pct: float = 0.7) -> dict:
 
@@ -500,14 +577,16 @@ if __name__ == "__main__":
     results = []
     features = {}
     lr_results_all = []
+    cv_results_all = []
 
     for pair_name, ticker in PAIRS.items():
         result = analyse_pair(pair_name, ticker)
         if result is not None:
-            stats, df_features, lr_result = result
+            stats, df_features, lr_result, cv_result = result
             results.append(stats)
             features[pair_name] = df_features
             lr_results_all.append(lr_result)
+            cv_results_all.append(cv_result)
 
 
     if not results:
@@ -685,6 +764,35 @@ for r in lr_results_all:
                    tablefmt="rounded_outline", showindex=False))
     print()
 
+print("\n" + "="*65)
+print("  WALK-FORWARD CROSS-VALIDATION RESULTS")
+print("="*65)
+
+cv_summary = []
+for r in cv_results_all:
+    cv_summary.append({
+        "Pair":             r["pair"],
+        "Mean Accuracy":    f"{r['mean_accuracy']*100:.1f}%",
+        "Mean Baseline":    f"{r['mean_baseline']*100:.1f}%",
+        "Mean Edge":        f"{r['mean_edge']*100:.1f}%",
+        "Mean ROC AUC":     f"{r['mean_roc_auc']:.3f}",
+        "Std Accuracy":     f"{r['std_accuracy']*100:.1f}%",
+        "Positive Folds":   f"{r['positive_edge_folds']}/{r['total_folds']}",
+    })
+
+print(tabulate(pd.DataFrame(cv_summary), headers="keys",
+               tablefmt="rounded_outline", showindex=False))
+
+print("\n  PER FOLD DETAIL")
+for r in cv_results_all:
+    print(f"\n  {r['pair']}")
+    fold_print = r["fold_df"].copy()
+    fold_print["accuracy"] = fold_print["accuracy"].apply(lambda x: f"{x*100:.1f}%")
+    fold_print["baseline"] = fold_print["baseline"].apply(lambda x: f"{x*100:.1f}%")
+    fold_print["edge"]     = fold_print["edge"].apply(lambda x: f"{x*100:.1f}%")
+    fold_print["roc_auc"]  = fold_print["roc_auc"].apply(lambda x: f"{x:.3f}")
+    print(tabulate(fold_print, headers="keys",
+                   tablefmt="rounded_outline", showindex=False))
 
     # ── Save to CSV ───────────────────────────────────────────────────────────
     out_path = "session_significance_results.csv"

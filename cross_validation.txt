@@ -26,3 +26,21 @@ What it tells us, that the single split doesn't:
 SKLEARN TOOL:
     > Built-in class called TimeSeriesSplit that handles all of the above automatically.
         > We tell it how many folds we want and it generates the correct expanding window indices for us.
+
+What we are looking for in our results:
+    > Positive Folds - A model that has positive edge in 4/5 or 5/5 folds.
+    > Std Accuracy - High standard deviation across folds means the model is unstable and regime dependent
+        > Our 2%-8% is a red flag contect of our mean accuracy being at about 70%, however, obviously 1-2% would be more what we're looking for.
+            > Paired with 0/5 positive edge folds in many cases: 
+                > Likely means our model is predicting the majority class almost every time.
+                    > If NY continues London's direction, say, 70% of the time in our data, a model that just always predicts "continuation" regardless of the feature gets 70% accuracy automatically.
+                        > As our mean baseline is also about 70%, our edge is basically 0% or negative in some cases (e.g. eur/usd)
+                        > We can check this by adding: <print(f"  Fold {fold} — predicted continuation: {y_pred.mean()*100:.1f}% of days")> in the run_walk_forward_cv function.
+                            > If this number is consistently above 90%, our model has collapsed to predicting the majority class almost exclusively.
+                                > This happens when logstic regressions have imbalanced classes. The features aren't strong enough to overcome the class imbalance.
+                                
+        > The 8% is suggesting to us that the model is learning different things in different periods, which confirms our 0/5 positive fold results.
+            > No persistent structure that the model can reliably latch on to.
+    > Mean ROC AUC trend - Look at the per fold detail, is AUC improving in later folds (more data = better) or declining?
+
+
