@@ -1,0 +1,28 @@
+> The 70/30 chronological split is better than a random split, but it has a weakness.
+    > We are only testing on one specific 30% window at the end of our data.
+        > That data might happen to be a particular type of trend or range that is not necessarily representitive of the full dataset.
+    
+
+Walk-forward cross-validation:
+    > The solution to the above, is to test across multiple windows that roll forward through time.
+    > Fold 1: Train [day 1-140], Test [day 141-200]
+    > Fold 2: Train [day 1-200], Test [day 201-260]
+    > Fold 3: Train [day 1-260], Test [day 261-300]
+
+        > Train set always expands and we never discard historical data... we just add more!
+        > Test set is always in the future relative to all the training data to avoid lookahead bias
+    
+    > This is called expanding window cross-validation and it's the most appropriate method for financial time series because it mimics how we would actually deploy the model in reality.
+        > We would retrain periodically on all available history and test on new incoming data
+
+What it tells us, that the single split doesn't:
+    > Instead of one accuracy number, we get a distribution of accuracy scores across multiple folds.
+    > This lets us ask:
+        > Is the model consistently above the baseline across all folds, or does it only work in certain periods?
+        > How much does performance vary fold-to-fold? Clearly high variance suggests instability.
+        > Is there a trend? Is the model getting better or worse as time goes on?
+    > A model that gets 55%, 54%, 56%, 53%, 55% across five folds is far more trustworthy than one that gets 65% on a single test window.
+
+SKLEARN TOOL:
+    > Built-in class called TimeSeriesSplit that handles all of the above automatically.
+        > We tell it how many folds we want and it generates the correct expanding window indices for us.
