@@ -16,5 +16,10 @@ What success looks like:
     > Completely random model would get 50% accuracy on our binary target since it's a coin flip. 
         > Anything meaningfully above 50% after proper cross-validation is a genuine finding.
             > Wouldn't expect anything like 80%... 55-60% is respectable & potentially tradeable for financial data.
-        
 
+The test will return edge, ROC AUC, and coefficients:
+    - edge - accuracy minus Baseline
+    - ROC AUC - Receiver Operating Characteristic Area Under Curve 
+        > Evaluates Logistic Regression by measuring how well the model separates binary classes across all thresholds
+            > Larger than 0.5, has discriminative power, greater than 0.6 is good.
+    - coefficients - Which features are consistently positive or negative across pairs tells you whats actually driving NY behaviour.
