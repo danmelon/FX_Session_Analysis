@@ -38,9 +38,7 @@ What we are looking for in our results:
                         > We can check this by adding: <print(f"  Fold {fold} — predicted continuation: {y_pred.mean()*100:.1f}% of days")> in the run_walk_forward_cv function.
                             > If this number is consistently above 90%, our model has collapsed to predicting the majority class almost exclusively.
                                 > This happens when logstic regressions have imbalanced classes. The features aren't strong enough to overcome the class imbalance.
-                                
+                                    > We can apply class_weight = "balanced" to address this issue.
         > The 8% is suggesting to us that the model is learning different things in different periods, which confirms our 0/5 positive fold results.
             > No persistent structure that the model can reliably latch on to.
     > Mean ROC AUC trend - Look at the per fold detail, is AUC improving in later folds (more data = better) or declining?
-
-
