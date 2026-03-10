@@ -1,0 +1,17 @@
+XGBoost vs Logistic Regression:
+    > As discussed earlier, logistic regression models linear relationships by calculating probabilities whereas XGBoost uses many decision trees, capturing non-linear relationships.
+    > No scaling needed - Decision trees split on feature values directly so they don't care whether one feature ranges from 0-1 and another from 0-1000.
+    > Hyperparameters matter - Logistic regression has very few knobs to turn, while XGBoost has many:
+        > n_estimators - how many trees to build (too many could lead to overfitting)
+        > max_depth - how deep each tree can go. Deeper = more complex interactions captured but more overfitting risk.
+        > learning_rate - how much each tree contributes to the final prediction. Lower = more conservative, needs more trees to compensate.
+        > scale_pos_weight - this is the class imbalance fix equivalent to class_weight="balanced" in sklearn... set it to the ratio of negative to positive cases.
+
+    > Early stopping - XGBoost can monitor performance on a validation set during training and stop adding trees once performance stops improving,
+        > This automatically prevents overfitting without us having to manually tune n_estimators.
+    
+What we're looking for in the results:
+    > Key question is: Does XGBoost meaningfully bear the logistic regression ROC AUC?
+        > If XGBoost ROC AUC is similar to logistic regression - the signal is weak & no hidden interactions
+        > If XGBoost ROC AUC is notably higher - there are nonlinear feature interactions worth investigating further with SHAP.
+        > Positive edge folds improving from 0/5, 1/5, and 2/5 - The model is more robust across periods.
