@@ -25,6 +25,8 @@ from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
 from sklearn.calibration import calibration_curve
 from sklearn.model_selection import TimeSeriesSplit
 
+from xgboost import XGBClassifier
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG — match your Streamlit app
 # ─────────────────────────────────────────────────────────────────────────────
@@ -328,6 +330,121 @@ def run_walk_forward_cv(df_features: pd.DataFrame, pair_name: str, n_splits: int
         "total_folds":   n_splits,
     }
 
+def run_xgboost_cv(df_features: pd.DataFrame, pair_name: str, n_splits: int = 5) -> dict:
+    """
+    Walk-forward cross-validation using XGBoost.
+    Handles class imbalance via scale_pos_weight.
+    No feature scaling needed for tree-based models.
+    """
+
+    FEATURES = [
+        "asia_range_percentile",
+        "london_range_percentile",
+        "london_asia_range_ratio",
+        "asia_range_expanding",
+        "asia_bullish",
+        "london_bullish",
+        "asia_london_agree",
+        "london_open_above_asia_mid",
+        "asia_mid_to_london_close",
+        "day_of_week",
+    ]
+
+    TARGET = "ny_continues_london"
+
+    X = df_features[FEATURES]
+    y = df_features[TARGET]
+
+    tscv        = TimeSeriesSplit(n_splits=n_splits)
+    fold_results = []
+
+    for fold, (train_idx, test_idx) in enumerate(tscv.split(X), 1):
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+        # ── Class imbalance correction ────────────────────────────────────
+        neg  = (y_train == 0).sum()
+        pos  = (y_train == 1).sum()
+        spw  = neg / pos if pos > 0 else 1
+
+        # ── Model ─────────────────────────────────────────────────────────
+        model = XGBClassifier(
+            n_estimators      = 200,
+            max_depth         = 3,
+            learning_rate     = 0.05,
+            scale_pos_weight  = spw,
+            eval_metric       = "logloss",
+            early_stopping_rounds = 20,
+            random_state      = 42,
+            verbosity         = 0,
+        )
+
+        # Use last 20% of training data as validation for early stopping
+        val_split   = int(len(X_train) * 0.8)
+        X_tr        = X_train.iloc[:val_split]
+        y_tr        = y_train.iloc[:val_split]
+        X_val       = X_train.iloc[val_split:]
+        y_val       = y_train.iloc[val_split:]
+
+        model.fit(
+            X_tr, y_tr,
+            eval_set          = [(X_val, y_val)],
+            verbose           = False,
+        )
+
+        # ── Evaluate ──────────────────────────────────────────────────────
+        y_pred       = model.predict(X_test)
+        y_pred_proba = model.predict_proba(X_test)[:, 1]
+
+        accuracy = accuracy_score(y_test, y_pred)
+        roc_auc  = roc_auc_score(y_test, y_pred_proba)
+        baseline = max(y_test.mean(), 1 - y_test.mean())
+        edge     = accuracy - baseline
+
+        # Feature importance for this fold
+        importance = pd.DataFrame({
+            "Feature":    FEATURES,
+            "Importance": model.feature_importances_,
+        }).sort_values("Importance", ascending=False)
+
+        fold_results.append({
+            "fold":       fold,
+            "n_train":    len(train_idx),
+            "n_test":     len(test_idx),
+            "accuracy":   accuracy,
+            "baseline":   baseline,
+            "edge":       edge,
+            "roc_auc":    roc_auc,
+            "importance": importance,
+            "n_trees":    model.best_iteration,
+        })
+
+    fold_df = pd.DataFrame([{k: v for k, v in f.items() if k != "importance"}
+                             for f in fold_results])
+
+    # Average feature importance across all folds
+    avg_importance = (
+        pd.concat([f["importance"] for f in fold_results])
+        .groupby("Feature")["Importance"]
+        .mean()
+        .reset_index()
+        .sort_values("Importance", ascending=False)
+    )
+
+    return {
+        "pair":             pair_name,
+        "fold_df":          fold_df,
+        "mean_accuracy":    fold_df["accuracy"].mean(),
+        "mean_baseline":    fold_df["baseline"].mean(),
+        "mean_edge":        fold_df["edge"].mean(),
+        "mean_roc_auc":     fold_df["roc_auc"].mean(),
+        "std_accuracy":     fold_df["accuracy"].std(),
+        "std_roc_auc":      fold_df["roc_auc"].std(),
+        "positive_edge_folds": (fold_df["edge"] > 0).sum(),
+        "total_folds":      n_splits,
+        "avg_importance":   avg_importance,
+    }
+
 def analyse_pair(pair_name: str, ticker: str) -> dict | None:
     """Run all conditional probability tests for one pair."""
     print(f"  Fetching {pair_name} ({ticker})...", end=" ", flush=True)
@@ -426,6 +543,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
 
     lr_results = run_logistic_regression(df_features, pair_name)
     cv_results = run_walk_forward_cv(df_features, pair_name)
+    xgb_results = run_xgboost_cv(df_features, pair_name)
 
     return {
         "Pair":                   pair_name,
@@ -482,7 +600,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
         "OOS Test T3 reversal rate":      oos["Test"]["T3 reversal rate"],
         "OOS Test T3 p":                  f"{oos['Test']['T3 p']:.2e}",
         "OOS Test T3 V":                  f"{oos['Test']['T3 V']:.3f}" if oos['Test']['T3 V'] else "N/A",
-    }, df_features, lr_results, cv_results
+    }, df_features, lr_results, cv_results, xgb_results
 
 def run_oos_validation(df: pd.DataFrame, train_pct: float = 0.7) -> dict:
 
@@ -574,19 +692,21 @@ if __name__ == "__main__":
     print(f"  Lookback: {LOOKBACK_DAYS} days | Significance threshold: p < 0.05")
     print("="*65 + "\n")
 
-    results = []
-    features = {}
-    lr_results_all = []
-    cv_results_all = []
+    results      = []
+    features     = {}
+    lr_results_all  = []
+    cv_results_all  = []
+    xgb_results_all = []
 
     for pair_name, ticker in PAIRS.items():
         result = analyse_pair(pair_name, ticker)
         if result is not None:
-            stats, df_features, lr_result, cv_result = result
+            stats, df_features, lr_result, cv_result, xgb_result = result
             results.append(stats)
-            features[pair_name] = df_features
+            features[pair_name]    = df_features
             lr_results_all.append(lr_result)
             cv_results_all.append(cv_result)
+            xgb_results_all.append(xgb_result)
 
 
     if not results:
@@ -784,6 +904,58 @@ print(tabulate(pd.DataFrame(cv_summary), headers="keys",
                tablefmt="rounded_outline", showindex=False))
 
 print("\n  PER FOLD DETAIL")
+
+print("\n" + "="*65)
+print("  XGBOOST WALK-FORWARD CROSS-VALIDATION RESULTS")
+print("="*65)
+
+xgb_summary = []
+for r in xgb_results_all:
+    xgb_summary.append({
+        "Pair":           r["pair"],
+        "Mean Accuracy":  f"{r['mean_accuracy']*100:.1f}%",
+        "Mean Baseline":  f"{r['mean_baseline']*100:.1f}%",
+        "Mean Edge":      f"{r['mean_edge']*100:.1f}%",
+        "Mean ROC AUC":   f"{r['mean_roc_auc']:.3f}",
+        "Std Accuracy":   f"{r['std_accuracy']*100:.1f}%",
+        "Positive Folds": f"{r['positive_edge_folds']}/{r['total_folds']}",
+    })
+
+print(tabulate(pd.DataFrame(xgb_summary), headers="keys",
+               tablefmt="rounded_outline", showindex=False))
+
+# ── Feature importance ────────────────────────────────────────────────────────
+print("\n  AVERAGE FEATURE IMPORTANCE BY PAIR")
+print("  (averaged across all folds)\n")
+for r in xgb_results_all:
+    print(f"  {r['pair']}")
+    print(tabulate(r["avg_importance"], headers="keys",
+                   tablefmt="rounded_outline", showindex=False,
+                   floatfmt=".4f"))
+    print()
+
+# ── LR vs XGB comparison ──────────────────────────────────────────────────────
+print("\n" + "="*65)
+print("  LOGISTIC REGRESSION vs XGBOOST COMPARISON")
+print("="*65)
+
+comparison = []
+for lr, xgb in zip(cv_results_all, xgb_results_all):
+    comparison.append({
+        "Pair":            xgb["pair"],
+        "LR ROC AUC":      f"{lr['mean_roc_auc']:.3f}",
+        "XGB ROC AUC":     f"{xgb['mean_roc_auc']:.3f}",
+        "AUC Improvement": f"{(xgb['mean_roc_auc'] - lr['mean_roc_auc']):.3f}",
+        "LR Edge":         f"{lr['mean_edge']*100:.1f}%",
+        "XGB Edge":        f"{xgb['mean_edge']*100:.1f}%",
+        "LR +ve Folds":    f"{lr['positive_edge_folds']}/{lr['total_folds']}",
+        "XGB +ve Folds":   f"{xgb['positive_edge_folds']}/{xgb['total_folds']}",
+    })
+
+print(tabulate(pd.DataFrame(comparison), headers="keys",
+               tablefmt="rounded_outline", showindex=False))
+
+
 for r in cv_results_all:
     print(f"\n  {r['pair']}")
     fold_print = r["fold_df"].copy()
@@ -793,6 +965,8 @@ for r in cv_results_all:
     fold_print["roc_auc"]  = fold_print["roc_auc"].apply(lambda x: f"{x:.3f}")
     print(tabulate(fold_print, headers="keys",
                    tablefmt="rounded_outline", showindex=False))
+
+
 
     # ── Save to CSV ───────────────────────────────────────────────────────────
     out_path = "session_significance_results.csv"
