@@ -1,0 +1,16 @@
+What SHAP does:
+    > SHAP (SHapley Additive exPlanations) answers a question that feature importance alone can't:
+        > not just which features matter, but how and why they push each individual prediction in a specific direction.
+        > Regular XGBoost feature importance just tells us:
+            > london_range_percentile - most important feature
+            > SHAP tells us:
+                > On this specific day, london_range_percentile was high (0.82), which pushed the continuation probability UP by 0.14.
+                > It does this for every feature on every single prediction, giving us a complete explanation of why the model said what it said.
+    
+The three outputs we'll generate:
+    > Summary Plot - shows every feature on the y-axis, every prediction as a dot, colour coded by feature value.
+        > Let's us see at a glance which features push towards continuation vs reversal and how strongly.
+    > Mean Absolute SHAP Values - ranks features by their average impact across all predictions.
+        > More reliable than XGBoost's built-in feature importance.
+    > Dependence - For our most important feature, shows how its SHAP value changes across its range.
+        > This reveeals nonlinear relationships visually.
