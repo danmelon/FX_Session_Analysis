@@ -32,6 +32,8 @@ import matplotlib.pyplot as plt
 
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
+from sklearn.calibration import CalibratedClassifierCV, calibration_curve
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG — match your Streamlit app
 # ─────────────────────────────────────────────────────────────────────────────
@@ -524,6 +526,121 @@ def run_shap_analysis(df_features: pd.DataFrame, pair_name: str) -> dict:
         "model":       model,
     }
 
+def run_calibration_analysis(df_features: pd.DataFrame, pair_name: str) -> dict:
+    """
+    Assesses and corrects probability calibration of XGBoost model.
+    Compares uncalibrated, Platt scaling, and isotonic regression.
+    """
+
+    FEATURES = [
+        "asia_range_percentile",
+        "london_range_percentile",
+        "london_asia_range_ratio",
+        "asia_range_expanding",
+        "asia_bullish",
+        "london_bullish",
+        "asia_london_agree",
+        "london_open_above_asia_mid",
+        "asia_mid_to_london_close",
+        "day_of_week",
+    ]
+
+    TARGET = "ny_continues_london"
+
+    # ── Chronological split ───────────────────────────────────────────────
+    split_idx = int(len(df_features) * 0.7)
+    train     = df_features.iloc[:split_idx]
+    test      = df_features.iloc[split_idx:]
+
+    X_train = train[FEATURES]
+    y_train = train[TARGET]
+    X_test  = test[FEATURES]
+    y_test  = test[TARGET]
+
+    # ── Class imbalance ───────────────────────────────────────────────────
+    neg = (y_train == 0).sum()
+    pos = (y_train == 1).sum()
+    spw = neg / pos if pos > 0 else 1
+
+   # ── Base XGBoost model — fit separately for uncalibrated probs ────────
+    base_model = XGBClassifier(
+        n_estimators     = 200,
+        max_depth        = 3,
+        learning_rate    = 0.05,
+        scale_pos_weight = spw,
+        eval_metric      = "logloss",
+        random_state     = 42,
+        verbosity        = 0,
+    )
+    base_model.fit(X_train, y_train)
+    proba_base = base_model.predict_proba(X_test)[:, 1]
+
+    # ── Calibrated models — fit fresh instances using CV ──────────────────
+    # cv=3 uses 3-fold CV internally to learn the calibration mapping
+    # must pass unfitted estimator instances
+    platt_model = CalibratedClassifierCV(
+        XGBClassifier(
+            n_estimators     = 200,
+            max_depth        = 3,
+            learning_rate    = 0.05,
+            scale_pos_weight = spw,
+            eval_metric      = "logloss",
+            random_state     = 42,
+            verbosity        = 0,
+        ),
+        cv=3, method="sigmoid"
+    )
+    platt_model.fit(X_train, y_train)
+    proba_platt = platt_model.predict_proba(X_test)[:, 1]
+
+    iso_model = CalibratedClassifierCV(
+        XGBClassifier(
+            n_estimators     = 200,
+            max_depth        = 3,
+            learning_rate    = 0.05,
+            scale_pos_weight = spw,
+            eval_metric      = "logloss",
+            random_state     = 42,
+            verbosity        = 0,
+        ),
+        cv=3, method="isotonic"
+    )
+    iso_model.fit(X_train, y_train)
+    proba_iso = iso_model.predict_proba(X_test)[:, 1]
+
+    # ── Calibration curves ────────────────────────────────────────────────
+    # n_bins controls granularity — keep low given small test set sizes
+    n_bins = 5
+
+    frac_base,  mean_base  = calibration_curve(y_test, proba_base,  n_bins=n_bins)
+    frac_platt, mean_platt = calibration_curve(y_test, proba_platt, n_bins=n_bins)
+    frac_iso,   mean_iso   = calibration_curve(y_test, proba_iso,   n_bins=n_bins)
+
+    # ── Brier score — lower is better, 0.25 = random, 0 = perfect ────────
+    from sklearn.metrics import brier_score_loss
+    brier_base  = brier_score_loss(y_test, proba_base)
+    brier_platt = brier_score_loss(y_test, proba_platt)
+    brier_iso   = brier_score_loss(y_test, proba_iso)
+
+    return {
+        "pair":        pair_name,
+        "y_test":      y_test,
+        "proba_base":  proba_base,
+        "proba_platt": proba_platt,
+        "proba_iso":   proba_iso,
+        "frac_base":   frac_base,
+        "mean_base":   mean_base,
+        "frac_platt":  frac_platt,
+        "mean_platt":  mean_platt,
+        "frac_iso":    frac_iso,
+        "mean_iso":    mean_iso,
+        "brier_base":  brier_base,
+        "brier_platt": brier_platt,
+        "brier_iso":   brier_iso,
+    }
+
+
+
 
 def analyse_pair(pair_name: str, ticker: str) -> dict | None:
     """Run all conditional probability tests for one pair."""
@@ -625,6 +742,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
     cv_results = run_walk_forward_cv(df_features, pair_name)
     xgb_results = run_xgboost_cv(df_features, pair_name)
     shap_results = run_shap_analysis(df_features, pair_name)
+    cal_results = run_calibration_analysis(df_features, pair_name)
 
     return {
         "Pair":                   pair_name,
@@ -681,7 +799,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
         "OOS Test T3 reversal rate":      oos["Test"]["T3 reversal rate"],
         "OOS Test T3 p":                  f"{oos['Test']['T3 p']:.2e}",
         "OOS Test T3 V":                  f"{oos['Test']['T3 V']:.3f}" if oos['Test']['T3 V'] else "N/A",
-    }, df_features, lr_results, cv_results, xgb_results, shap_results
+    }, df_features, lr_results, cv_results, xgb_results, shap_results, cal_results
 
 def run_oos_validation(df: pd.DataFrame, train_pct: float = 0.7) -> dict:
 
@@ -773,23 +891,25 @@ if __name__ == "__main__":
     print(f"  Lookback: {LOOKBACK_DAYS} days | Significance threshold: p < 0.05")
     print("="*65 + "\n")
 
-    results         = []
-    features        = {}
-    lr_results_all  = []
-    cv_results_all  = []
-    xgb_results_all = []
+    results          = []
+    features         = {}
+    lr_results_all   = []
+    cv_results_all   = []
+    xgb_results_all  = []
     shap_results_all = []
+    cal_results_all  = []
 
     for pair_name, ticker in PAIRS.items():
         result = analyse_pair(pair_name, ticker)
         if result is not None:
-            stats, df_features, lr_result, cv_result, xgb_result, shap_result = result
+            stats, df_features, lr_result, cv_result, xgb_result, shap_result, cal_result = result
             results.append(stats)
-            features[pair_name]      = df_features
+            features[pair_name]       = df_features
             lr_results_all.append(lr_result)
             cv_results_all.append(cv_result)
             xgb_results_all.append(xgb_result)
             shap_results_all.append(shap_result)
+            cal_results_all.append(cal_result)
 
 
     if not results:
@@ -1138,6 +1258,70 @@ for r in shap_results_all:
     ax.set_title(f"SHAP Dependence — {top_feature} — {r['pair']}")
     plt.tight_layout()
     filename = f"shap_dependence_{r['pair'].replace('/', '_')}.png"
+    plt.savefig(filename, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {filename}")
+    
+
+print("\n" + "="*65)
+print("  PROBABILITY CALIBRATION ANALYSIS")
+print("="*65)
+
+# ── Brier score summary table ─────────────────────────────────────────────────
+print("\n  BRIER SCORES BY PAIR")
+print("  (lower = better | random baseline = 0.25 | perfect = 0.00)\n")
+
+brier_summary = []
+for r in cal_results_all:
+    best = min(r["brier_base"], r["brier_platt"], r["brier_iso"])
+    brier_summary.append({
+        "Pair":          r["pair"],
+        "Uncalibrated":  f"{r['brier_base']:.4f}",
+        "Platt":         f"{r['brier_platt']:.4f}",
+        "Isotonic":      f"{r['brier_iso']:.4f}",
+        "Best Method":   (
+            "Uncalibrated" if best == r["brier_base"] else
+            "Platt"        if best == r["brier_platt"] else
+            "Isotonic"
+        ),
+    })
+
+print(tabulate(pd.DataFrame(brier_summary), headers="keys",
+               tablefmt="rounded_outline", showindex=False))
+
+# ── Reliability diagrams ──────────────────────────────────────────────────────
+print("\n  Generating reliability diagrams...")
+
+for r in cal_results_all:
+    fig, ax = plt.subplots(figsize=(7, 6))
+
+    # Perfect calibration reference line
+    ax.plot([0, 1], [0, 1], "k--", linewidth=1, label="Perfect calibration")
+
+    ax.plot(r["mean_base"],  r["frac_base"],
+            "o-", color="#fb923c", linewidth=2, label="Uncalibrated")
+    ax.plot(r["mean_platt"], r["frac_platt"],
+            "s-", color="#a78bfa", linewidth=2, label="Platt scaling")
+    ax.plot(r["mean_iso"],   r["frac_iso"],
+            "^-", color="#38bdf8", linewidth=2, label="Isotonic")
+
+    ax.set_xlabel("Mean Predicted Probability")
+    ax.set_ylabel("Fraction of Positives (Actual)")
+    ax.set_title(f"Reliability Diagram — {r['pair']}")
+    ax.legend(loc="upper left")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.grid(alpha=0.3)
+
+    # Annotate Brier scores
+    ax.text(0.05, 0.88,
+            f"Brier — Uncal: {r['brier_base']:.4f} | "
+            f"Platt: {r['brier_platt']:.4f} | "
+            f"Iso: {r['brier_iso']:.4f}",
+            transform=ax.transAxes, fontsize=8, color="#64748b")
+
+    plt.tight_layout()
+    filename = f"calibration_{r['pair'].replace('/', '_')}.png"
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {filename}")
