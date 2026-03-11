@@ -27,6 +27,11 @@ from sklearn.model_selection import TimeSeriesSplit
 
 from xgboost import XGBClassifier
 
+import shap
+import matplotlib.pyplot as plt
+
+from statsmodels.nonparametric.smoothers_lowess import lowess
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG — match your Streamlit app
 # ─────────────────────────────────────────────────────────────────────────────
@@ -445,6 +450,81 @@ def run_xgboost_cv(df_features: pd.DataFrame, pair_name: str, n_splits: int = 5)
         "avg_importance":   avg_importance,
     }
 
+def run_shap_analysis(df_features: pd.DataFrame, pair_name: str) -> dict:
+    """
+    Runs SHAP analysis on XGBoost model trained on full dataset.
+    Uses full dataset for SHAP rather than CV folds to maximise
+    the number of explanations generated.
+    """
+
+    FEATURES = [
+        "asia_range_percentile",
+        "london_range_percentile",
+        "london_asia_range_ratio",
+        "asia_range_expanding",
+        "asia_bullish",
+        "london_bullish",
+        "asia_london_agree",
+        "london_open_above_asia_mid",
+        "asia_mid_to_london_close",
+        "day_of_week",
+    ]
+
+    TARGET = "ny_continues_london"
+
+    # ── Chronological split ───────────────────────────────────────────────
+    split_idx = int(len(df_features) * 0.7)
+    train     = df_features.iloc[:split_idx]
+    test      = df_features.iloc[split_idx:]
+
+    X_train = train[FEATURES]
+    y_train = train[TARGET]
+    X_test  = test[FEATURES]
+    y_test  = test[TARGET]
+
+    # ── Train XGBoost on train set ────────────────────────────────────────
+    neg = (y_train == 0).sum()
+    pos = (y_train == 1).sum()
+    spw = neg / pos if pos > 0 else 1
+
+    model = XGBClassifier(
+        n_estimators     = 200,
+        max_depth        = 3,
+        learning_rate    = 0.05,
+        scale_pos_weight = spw,
+        eval_metric      = "logloss",
+        random_state     = 42,
+        verbosity        = 0,
+    )
+    model.fit(X_train, y_train)
+
+    # ── SHAP values on test set ───────────────────────────────────────────
+    explainer   = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_test)
+
+    # ── Mean absolute SHAP — feature ranking ─────────────────────────────
+    mean_shap = pd.DataFrame({
+        "Feature":          FEATURES,
+        "Mean |SHAP|":      np.abs(shap_values).mean(axis=0),
+        "Mean SHAP":        shap_values.mean(axis=0),
+    }).sort_values("Mean |SHAP|", ascending=False)
+
+    # Positive mean SHAP = pushes towards continuation
+    # Negative mean SHAP = pushes towards reversal
+    mean_shap["Direction"] = mean_shap["Mean SHAP"].apply(
+        lambda x: "→ Continuation" if x > 0 else "→ Reversal"
+    )
+
+    return {
+        "pair":        pair_name,
+        "shap_values": shap_values,
+        "X_test":      X_test,
+        "mean_shap":   mean_shap,
+        "explainer":   explainer,
+        "model":       model,
+    }
+
+
 def analyse_pair(pair_name: str, ticker: str) -> dict | None:
     """Run all conditional probability tests for one pair."""
     print(f"  Fetching {pair_name} ({ticker})...", end=" ", flush=True)
@@ -544,6 +624,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
     lr_results = run_logistic_regression(df_features, pair_name)
     cv_results = run_walk_forward_cv(df_features, pair_name)
     xgb_results = run_xgboost_cv(df_features, pair_name)
+    shap_results = run_shap_analysis(df_features, pair_name)
 
     return {
         "Pair":                   pair_name,
@@ -600,7 +681,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
         "OOS Test T3 reversal rate":      oos["Test"]["T3 reversal rate"],
         "OOS Test T3 p":                  f"{oos['Test']['T3 p']:.2e}",
         "OOS Test T3 V":                  f"{oos['Test']['T3 V']:.3f}" if oos['Test']['T3 V'] else "N/A",
-    }, df_features, lr_results, cv_results, xgb_results
+    }, df_features, lr_results, cv_results, xgb_results, shap_results
 
 def run_oos_validation(df: pd.DataFrame, train_pct: float = 0.7) -> dict:
 
@@ -692,21 +773,23 @@ if __name__ == "__main__":
     print(f"  Lookback: {LOOKBACK_DAYS} days | Significance threshold: p < 0.05")
     print("="*65 + "\n")
 
-    results      = []
-    features     = {}
+    results         = []
+    features        = {}
     lr_results_all  = []
     cv_results_all  = []
     xgb_results_all = []
+    shap_results_all = []
 
     for pair_name, ticker in PAIRS.items():
         result = analyse_pair(pair_name, ticker)
         if result is not None:
-            stats, df_features, lr_result, cv_result, xgb_result = result
+            stats, df_features, lr_result, cv_result, xgb_result, shap_result = result
             results.append(stats)
-            features[pair_name]    = df_features
+            features[pair_name]      = df_features
             lr_results_all.append(lr_result)
             cv_results_all.append(cv_result)
             xgb_results_all.append(xgb_result)
+            shap_results_all.append(shap_result)
 
 
     if not results:
@@ -966,7 +1049,98 @@ for r in cv_results_all:
     print(tabulate(fold_print, headers="keys",
                    tablefmt="rounded_outline", showindex=False))
 
+print("\n" + "="*65)
+print("  SHAP ANALYSIS")
+print("="*65)
 
+# ── Mean SHAP table ───────────────────────────────────────────────────────────
+print("\n  MEAN ABSOLUTE SHAP VALUES BY PAIR")
+print("  (Mean |SHAP| = average impact magnitude on model output)")
+print("  (Direction = average push towards continuation or reversal)\n")
+
+for r in shap_results_all:
+    print(f"  {r['pair']}")
+    print(tabulate(r["mean_shap"], headers="keys",
+                   tablefmt="rounded_outline", showindex=False,
+                   floatfmt=".4f"))
+    print()
+
+# ── Cross-pair feature ranking ────────────────────────────────────────────────
+print("\n  AVERAGE MEAN |SHAP| ACROSS ALL PAIRS")
+all_shap = pd.concat([r["mean_shap"][["Feature", "Mean |SHAP|"]]
+                       for r in shap_results_all])
+cross_pair_shap = (
+    all_shap.groupby("Feature")["Mean |SHAP|"]
+    .mean()
+    .reset_index()
+    .sort_values("Mean |SHAP|", ascending=False)
+)
+print(tabulate(cross_pair_shap, headers="keys",
+               tablefmt="rounded_outline", showindex=False,
+               floatfmt=".4f"))
+
+# ── Plots ─────────────────────────────────────────────────────────────────────
+print("\n  Generating SHAP plots — one per pair...")
+
+for r in shap_results_all:
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    fig.suptitle(f"SHAP Analysis — {r['pair']}", fontsize=14, fontweight="bold")
+
+    # Summary plot
+    plt.sca(axes[0])
+    shap.summary_plot(
+        r["shap_values"],
+        r["X_test"],
+        show=False,
+        plot_size=None,
+    )
+    axes[0].set_title("SHAP Summary — Feature Impact Distribution")
+
+    # Bar plot — mean absolute SHAP
+    plt.sca(axes[1])
+    shap.summary_plot(
+        r["shap_values"],
+        r["X_test"],
+        plot_type="bar",
+        show=False,
+        plot_size=None,
+    )
+    axes[1].set_title("Mean |SHAP| — Average Feature Importance")
+
+    plt.tight_layout()
+    filename = f"shap_{r['pair'].replace('/', '_')}.png"
+    plt.savefig(filename, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {filename}")
+
+print("\n  SHAP dependence plot for top feature across all pairs...")
+
+for r in shap_results_all:
+    top_feature = r["mean_shap"]["Feature"].iloc[0]
+    fig, ax     = plt.subplots(figsize=(8, 5))
+
+    shap.dependence_plot(
+        top_feature,
+        r["shap_values"],
+        r["X_test"],
+        ax=ax,
+        show=False,
+        
+    )
+    x_vals = r["X_test"][top_feature].values
+    y_vals = r["shap_values"][:, r["X_test"].columns.get_loc(top_feature)]
+
+    smoothed = lowess(y_vals, x_vals, frac=0.3)
+    ax.plot(smoothed[:, 0], smoothed[:, 1], 
+            color="red", linewidth=2, label="LOWESS trend")
+    ax.legend()
+    
+    ax.set_title(f"SHAP Dependence — {top_feature} — {r['pair']}")
+    plt.tight_layout()
+    filename = f"shap_dependence_{r['pair'].replace('/', '_')}.png"
+    plt.savefig(filename, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {filename}")
 
     # ── Save to CSV ───────────────────────────────────────────────────────────
     out_path = "session_significance_results.csv"

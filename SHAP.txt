@@ -14,3 +14,6 @@ The three outputs we'll generate:
         > More reliable than XGBoost's built-in feature importance.
     > Dependence - For our most important feature, shows how its SHAP value changes across its range.
         > This reveeals nonlinear relationships visually.
+
+
+> We add in a LOWESS smoothing line - this fits a flexible local regression curve that follows the actual shape of the data without imposing linearity.
