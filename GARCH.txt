@@ -1,0 +1,27 @@
+> What are GARCH models:
+    > Standard statistics assumes volatility is constant over time.
+        > We know this is not true in markets.
+        > Markets have volatility clustering.
+    
+    > GARCH (Generalised Autoregressive Conditional Heteroskedasticity) captures this by modelling today's volatility as a function of:
+        > Yesterday's volatility estimate
+        > Yesterday's actual return shock
+            > The result is a daily conditional volatility estimate - how volatile the model thinks today will be based on recent history.
+
+> How we use it for session analysis:
+    > Once we have a vol estimate for each day, we split the data into regimes.
+        > High vol regime - top 33% of vol days
+        > Medium vol regime - middle 33%
+        > Low vol regime - bottom 33%
+
+    > The we re-run our session break probabilities, continuation rates and XGBoost accuracy within each regime seperately.
+        > Then:
+            > Does London break Asia more often in high volatility regimes?
+            > Is NY continuation stronger or weaker when volatility is elevated?
+            > Does the V shape in asia_mid_to_london_close persist across all regimes or only specific ones?
+
+> What to expect:
+    > High volatility regimes will almost certainly show higher session break rates.
+        > This is mechanical since larger moves are more likely to exceed prior session highs and lows.
+            > The more interesting finding would be if the directional continuation rateor the V shape changes meaningfully across regimes.
+                > Would suggest the relationship between sessions is regime-dependent.
