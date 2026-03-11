@@ -1,0 +1,25 @@
+> What regime analysis is trying to answer:
+    > Everything in Layers 1 and 2 treated the entire dataset as one homogeneous period.
+        > Markets are not homogeneous. They cycle through different behavioural states.
+            > Trending vs ranging etc...
+            > Probabilities of session breaks, continuations etc will have different rates in different regimes.
+                > Can we identify these hidden states, and do our findings hold differently across them?
+    
+> The two approaches we are investigating:
+    > Hidden Markov Models (HMM) - Unsupervised, finds latent regimes purely from the data without us defining in advance.
+        > We tell it how many states we want (2 or 3) and it figures out which days belong to which state bsaed on statistical properties of our features.
+        > Typical states include trending, ranging, volatile.
+    > GARCH - Models time-varying volatility.
+        > Rather than discrete regimes it gives us a continuous volatility estimate for each day.
+            > We then use this to split the data into high/low volatility periods and re-run our session analysis within each.
+
+> Assessment of Complexity vs Payoff:
+    > HMM is the more impressive and interesting of the two.
+        > However, adds meaningful complexity and with our 200-300 days sample size, fitting a reliable HMM is difficult.
+            > Risk the model fitting useless regimes in noise rather than real structure.
+    > GARCH more tractable with small samples & directly relevant to trading.
+        > Volatility regime is one of the most well-established conditioning variables in systematic strategies.
+
+    > We will use GARCH ONLY in this project. HMM is something I want to explore when I have larger datasets.
+
+    
