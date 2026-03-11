@@ -1,0 +1,26 @@
+> Our XGBoost model outputs a probability for each day.
+    > Something like "72% chance NY continues London today"
+        > Does that actually mean anything?
+            > Calibration asks: on all the days the model said 70%, did continuation actually happen 70% on the time.
+
+> Why it matters in trading specifically:
+    > In most ML applications we just care whether the prediction is right or wrong.
+        > In trading we care about the probability estimate itself because it directly feeds into position sizing
+            > Kelly Criterion.
+
+> Two types of miscalibration:
+    > Overconfident - the model probabilities are too extreme, clustering near 0 & 1.
+    > Underconfident - probabilities cluster too close to 0.5, and the model is too hesitant.
+
+> The reliability diagram:
+    > The main visual output is the reliability diagram.
+        > predicted probability on the x-axis, actual frequency on the y-axis.
+        > Perfect calibration would be a diagonal line.
+        > Points above the diagonal mean Underconfident.
+
+> How to fix poor calibration:
+    > Sklearn has two calibration methods we can apply on top of the existing model:
+        > Platt scaling - fits a logistic regression on top of the model outputs. Better for small datasets
+        > Isotonic regression - fits a flexible monotonic function. 
+            > Better for larger datasets but can overfit with small samples.
+    > Platt probably better for our situation but we try both.
