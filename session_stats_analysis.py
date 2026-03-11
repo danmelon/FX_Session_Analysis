@@ -34,6 +34,8 @@ from statsmodels.nonparametric.smoothers_lowess import lowess
 
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
 
+from arch import arch_model
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG — match your Streamlit app
 # ─────────────────────────────────────────────────────────────────────────────
@@ -640,9 +642,158 @@ def run_calibration_analysis(df_features: pd.DataFrame, pair_name: str) -> dict:
     }
 
 
+def run_garch_analysis(df_features: pd.DataFrame, hourly: pd.DataFrame, pair_name: str) -> dict:
+    """
+    Fits a GARCH(1,1) model to daily returns to estimate volatility regimes.
+    Re-runs session analysis within each regime to assess regime dependency.
+    """
 
+    # ── Compute daily returns from hourly data ────────────────────────────
+    if isinstance(hourly.columns, pd.MultiIndex):
+        hourly.columns = hourly.columns.get_level_values(0)
 
-def analyse_pair(pair_name: str, ticker: str) -> dict | None:
+    # Use close price, resample to daily
+    daily_close = hourly["Close"].resample("1D").last().dropna()
+    daily_returns = daily_close.pct_change().dropna() * 100  # percentage returns
+
+    # ── Fit GARCH(1,1) ────────────────────────────────────────────────────
+    model = arch_model(
+        daily_returns,
+        vol   = "Garch",
+        p     = 1,
+        q     = 1,
+        mean  = "constant",
+        dist  = "normal",
+    )
+
+    try:
+        result = model.fit(disp="off")
+    except Exception as e:
+        print(f"  GARCH fit failed for {pair_name}: {e}")
+        return None
+
+    # ── Extract conditional volatility ────────────────────────────────────
+    cond_vol = result.conditional_volatility
+
+    # Align with session dataframe on date index
+    cond_vol.index = pd.to_datetime(cond_vol.index).normalize().tz_localize(None)
+    df_aligned = df_features.copy()
+    df_aligned.index = pd.to_datetime(df_aligned.index).normalize().tz_localize(None)
+
+    df_aligned = df_aligned.join(
+        cond_vol.rename("cond_vol"), how="inner"
+    )
+
+    if len(df_aligned) < 30:
+        print(f"  Insufficient aligned data for {pair_name} after GARCH join")
+        return None
+
+    # ── Assign volatility regimes by tertile ──────────────────────────────
+    df_aligned["vol_regime"] = pd.qcut(
+        df_aligned["cond_vol"],
+        q      = 3,
+        labels = ["Low Vol", "Medium Vol", "High Vol"]
+    )
+
+    # ── Re-run session analysis within each regime ────────────────────────
+    regime_stats = {}
+
+    for regime in ["Low Vol", "Medium Vol", "High Vol"]:
+        subset = df_aligned[df_aligned["vol_regime"] == regime]
+        n      = len(subset)
+
+        if n < 10:
+            continue
+
+        # Break probabilities
+        london_breaks = (
+            (subset["london_high"] > subset["asia_high"]) |
+            (subset["london_low"]  < subset["asia_low"])
+        )
+        ny_breaks = (
+            (subset["ny_high"]  > subset["london_high"]) |
+            (subset["ny_low"]   < subset["london_low"])
+        )
+
+        # Directional continuation
+        london_bull  = subset["london_direction"] == "Bullish"
+        ny_bull      = subset["ny_direction"]     == "Bullish"
+        ny_continues = (london_bull == ny_bull)
+
+        # Range averages
+        asia_range_avg   = subset["asia_range"].mean()
+        london_range_avg = subset["london_range"].mean()
+        ny_range_avg     = subset["ny_range"].mean()
+
+        # XGBoost accuracy within regime
+        FEATURES = [
+            "asia_range_percentile",
+            "london_range_percentile",
+            "london_asia_range_ratio",
+            "asia_range_expanding",
+            "asia_bullish",
+            "london_bullish",
+            "asia_london_agree",
+            "london_open_above_asia_mid",
+            "asia_mid_to_london_close",
+            "day_of_week",
+        ]
+        TARGET = "ny_continues_london"
+
+        if len(subset) >= 20 and TARGET in subset.columns:
+            split_idx = int(len(subset) * 0.7)
+            X_train   = subset[FEATURES].iloc[:split_idx]
+            y_train   = subset[TARGET].iloc[:split_idx]
+            X_test    = subset[FEATURES].iloc[split_idx:]
+            y_test    = subset[TARGET].iloc[split_idx:]
+
+            if len(X_test) > 5 and len(y_train.unique()) > 1:
+                neg = (y_train == 0).sum()
+                pos = (y_train == 1).sum()
+                spw = neg / pos if pos > 0 else 1
+
+                xgb = XGBClassifier(
+                    n_estimators     = 100,
+                    max_depth        = 3,
+                    learning_rate    = 0.05,
+                    scale_pos_weight = spw,
+                    eval_metric      = "logloss",
+                    random_state     = 42,
+                    verbosity        = 0,
+                )
+                xgb.fit(X_train, y_train)
+                y_pred   = xgb.predict(X_test)
+                accuracy = accuracy_score(y_test, y_pred)
+                baseline = max(y_test.mean(), 1 - y_test.mean())
+                edge     = accuracy - baseline
+            else:
+                accuracy, baseline, edge = None, None, None
+        else:
+            accuracy, baseline, edge = None, None, None
+
+        regime_stats[regime] = {
+            "n":                    n,
+            "avg_cond_vol":         subset["cond_vol"].mean(),
+            "asia_range_avg":       asia_range_avg,
+            "london_range_avg":     london_range_avg,
+            "ny_range_avg":         ny_range_avg,
+            "london_breaks_asia":   london_breaks.mean() * 100,
+            "ny_breaks_london":     ny_breaks.mean() * 100,
+            "ny_continues_london":  ny_continues.mean() * 100,
+            "xgb_accuracy":         accuracy,
+            "xgb_baseline":         baseline,
+            "xgb_edge":             edge,
+        }
+
+    return {
+        "pair":          pair_name,
+        "garch_result":  result,
+        "cond_vol":      cond_vol,
+        "df_aligned":    df_aligned,
+        "regime_stats":  regime_stats,
+    }
+
+def analyse_pair(pair_name: str, ticker: str) -> dict:
     """Run all conditional probability tests for one pair."""
     print(f"  Fetching {pair_name} ({ticker})...", end=" ", flush=True)
 
@@ -743,6 +894,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
     xgb_results = run_xgboost_cv(df_features, pair_name)
     shap_results = run_shap_analysis(df_features, pair_name)
     cal_results = run_calibration_analysis(df_features, pair_name)
+    garch_results = run_garch_analysis(df_features, hourly, pair_name)
 
     return {
         "Pair":                   pair_name,
@@ -799,7 +951,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict | None:
         "OOS Test T3 reversal rate":      oos["Test"]["T3 reversal rate"],
         "OOS Test T3 p":                  f"{oos['Test']['T3 p']:.2e}",
         "OOS Test T3 V":                  f"{oos['Test']['T3 V']:.3f}" if oos['Test']['T3 V'] else "N/A",
-    }, df_features, lr_results, cv_results, xgb_results, shap_results, cal_results
+    }, df_features, lr_results, cv_results, xgb_results, shap_results, cal_results, garch_results
 
 def run_oos_validation(df: pd.DataFrame, train_pct: float = 0.7) -> dict:
 
@@ -898,18 +1050,22 @@ if __name__ == "__main__":
     xgb_results_all  = []
     shap_results_all = []
     cal_results_all  = []
+    garch_results_all = []
 
     for pair_name, ticker in PAIRS.items():
         result = analyse_pair(pair_name, ticker)
         if result is not None:
-            stats, df_features, lr_result, cv_result, xgb_result, shap_result, cal_result = result
+            stats, df_features, lr_result, cv_result, xgb_result, \
+            shap_result, cal_result, garch_result = result
             results.append(stats)
-            features[pair_name]       = df_features
+            features[pair_name]        = df_features
             lr_results_all.append(lr_result)
             cv_results_all.append(cv_result)
             xgb_results_all.append(xgb_result)
             shap_results_all.append(shap_result)
             cal_results_all.append(cal_result)
+            if garch_result is not None:
+                garch_results_all.append(garch_result)
 
 
     if not results:
@@ -1322,6 +1478,102 @@ for r in cal_results_all:
 
     plt.tight_layout()
     filename = f"calibration_{r['pair'].replace('/', '_')}.png"
+    plt.savefig(filename, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {filename}")
+
+
+print("\n" + "="*65)
+print("  GARCH VOLATILITY REGIME ANALYSIS")
+print("="*65)
+
+for r in garch_results_all:
+    print(f"\n  {r['pair']}")
+    print(f"  {'─'*55}")
+
+    regime_rows = []
+    for regime, s in r["regime_stats"].items():
+        regime_rows.append({
+            "Regime":             regime,
+            "N Days":             s["n"],
+            "Avg Vol":            f"{s['avg_cond_vol']:.3f}",
+            "Asia Range":         f"{s['asia_range_avg']:.5f}",
+            "London Range":       f"{s['london_range_avg']:.5f}",
+            "NY Range":           f"{s['ny_range_avg']:.5f}",
+            "London Breaks Asia": f"{s['london_breaks_asia']:.1f}%",
+            "NY Breaks London":   f"{s['ny_breaks_london']:.1f}%",
+            "NY Continues":       f"{s['ny_continues_london']:.1f}%",
+            "XGB Edge":           f"{s['xgb_edge']*100:.1f}%" if s['xgb_edge'] is not None else "N/A",
+        })
+
+    print(tabulate(pd.DataFrame(regime_rows), headers="keys",
+                   tablefmt="rounded_outline", showindex=False))
+
+# ── Conditional volatility plots ──────────────────────────────────────────────
+print("\n  Generating GARCH conditional volatility plots...")
+
+for r in garch_results_all:
+    df_plot = r["df_aligned"].copy()
+
+    fig, axes = plt.subplots(3, 1, figsize=(12, 10))
+    fig.suptitle(f"GARCH Volatility Regime Analysis — {r['pair']}",
+                 fontsize=13, fontweight="bold")
+
+    # ── Plot 1: Conditional volatility over time ──────────────────────────
+    axes[0].plot(df_plot.index, df_plot["cond_vol"],
+                 color="#38bdf8", linewidth=1.5)
+    axes[0].set_title("Conditional Volatility (GARCH)")
+    axes[0].set_ylabel("Volatility")
+    axes[0].grid(alpha=0.2)
+
+    # Shade regimes
+    colors = {"Low Vol": "#22c55e", "Medium Vol": "#f59e0b", "High Vol": "#ef4444"}
+    for regime, color in colors.items():
+        mask = df_plot["vol_regime"] == regime
+        axes[0].fill_between(df_plot.index, 0, df_plot["cond_vol"],
+                             where=mask, alpha=0.15, color=color, label=regime)
+    axes[0].legend(loc="upper right", fontsize=8)
+
+    # ── Plot 2: Session ranges by regime ─────────────────────────────────
+    regime_labels = list(r["regime_stats"].keys())
+    asia_avgs     = [r["regime_stats"][reg]["asia_range_avg"]   for reg in regime_labels]
+    london_avgs   = [r["regime_stats"][reg]["london_range_avg"] for reg in regime_labels]
+    ny_avgs       = [r["regime_stats"][reg]["ny_range_avg"]     for reg in regime_labels]
+
+    x     = np.arange(len(regime_labels))
+    width = 0.25
+
+    axes[1].bar(x - width, asia_avgs,   width, label="Asia",   color="#38bdf8")
+    axes[1].bar(x,         london_avgs, width, label="London", color="#a78bfa")
+    axes[1].bar(x + width, ny_avgs,     width, label="NY",     color="#fb923c")
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(regime_labels)
+    axes[1].set_title("Average Session Range by Volatility Regime")
+    axes[1].set_ylabel("Range")
+    axes[1].legend()
+    axes[1].grid(alpha=0.2, axis="y")
+
+    # ── Plot 3: Break and continuation probabilities by regime ────────────
+    london_breaks = [r["regime_stats"][reg]["london_breaks_asia"]  for reg in regime_labels]
+    ny_breaks     = [r["regime_stats"][reg]["ny_breaks_london"]    for reg in regime_labels]
+    ny_continues  = [r["regime_stats"][reg]["ny_continues_london"] for reg in regime_labels]
+
+    axes[2].plot(regime_labels, london_breaks, "o-",
+                 color="#a78bfa", linewidth=2, label="London breaks Asia")
+    axes[2].plot(regime_labels, ny_breaks,     "s-",
+                 color="#fb923c", linewidth=2, label="NY breaks London")
+    axes[2].plot(regime_labels, ny_continues,  "^-",
+                 color="#f472b6", linewidth=2, label="NY continues London")
+    axes[2].axhline(y=50, color="white", linestyle="--",
+                    alpha=0.3, linewidth=1, label="50% baseline")
+    axes[2].set_title("Session Probabilities by Volatility Regime")
+    axes[2].set_ylabel("Probability %")
+    axes[2].set_ylim(0, 100)
+    axes[2].legend(fontsize=8)
+    axes[2].grid(alpha=0.2)
+
+    plt.tight_layout()
+    filename = f"garch_{r['pair'].replace('/', '_')}.png"
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {filename}")
