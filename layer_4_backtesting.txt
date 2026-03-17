@@ -1,0 +1,25 @@
+What we're backtesting:
+    > We must define a precise rules-based strategy before writing the code.
+        > From our research, the natural strategy would be:
+            > Signal - Platt-calibrated XGBoost probability from the previous day's features to predict NY continuation.
+            > Entry - At NY session Open (13:00 UTC)
+            > Direction - If probability > threshold, go long if London was bullish, short if London was bearish.
+            > Exit - At NY session close (22:00 UTC). Session trade, no overnight holding.
+            > Position Sizing:
+                <> Fixed size
+                <> Kelly size f = p - (1-p)/b
+                    > p = estimated probability of winning
+                    > b = ratio of win to loss
+                    > f = fraction of capital to risk
+                        > Since we don't know b in advance, we estimate it from our training set and apply it to the test set
+
+What we're measuring:
+    > Equity Curve - cumulative returns over time
+    > Sharpe ratio - return per unit of risk (annualised). Above 1.0 is good. Above 2.0 is excellent.
+    > Calmar ratio - annualised return divided by max drawdown
+    > Max drawdown - largest peak to trough decline
+    > Win rate - percentage of profitable trades
+    > Average R:R - average winner size divided by average loser size
+    > Number of trades - if there are too few trades, the results are not meaningul
+
+> Given our prior tests (weak CV edge, poor positive fold rates, majority class prediction) we should not expect a profitable backtest.
