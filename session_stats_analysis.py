@@ -36,6 +36,9 @@ from sklearn.calibration import CalibratedClassifierCV, calibration_curve
 
 from arch import arch_model
 
+from sklearn.pipeline import Pipeline
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG — match your Streamlit app
 # ─────────────────────────────────────────────────────────────────────────────
@@ -793,6 +796,195 @@ def run_garch_analysis(df_features: pd.DataFrame, hourly: pd.DataFrame, pair_nam
         "regime_stats":  regime_stats,
     }
 
+def run_backtest(df_features: pd.DataFrame, pair_name: str) -> dict:
+    """
+    Backtests a session-based strategy using calibrated XGBoost probabilities.
+    Entry: NY open (13:00 UTC)
+    Exit:  NY close (22:00 UTC)
+    Signal: Platt-calibrated XGBoost probability of NY continuation
+    Sizing: Fixed and Kelly
+    """
+
+    FEATURES = [
+        "asia_range_percentile",
+        "london_range_percentile",
+        "london_asia_range_ratio",
+        "asia_range_expanding",
+        "asia_bullish",
+        "london_bullish",
+        "asia_london_agree",
+        "london_open_above_asia_mid",
+        "asia_mid_to_london_close",
+        "day_of_week",
+    ]
+
+    TARGET = "ny_continues_london"
+
+    # ── Chronological split ───────────────────────────────────────────────
+    split_idx = int(len(df_features) * 0.7)
+    train     = df_features.iloc[:split_idx]
+    test      = df_features.iloc[split_idx:]
+
+    X_train = train[FEATURES]
+    y_train = train[TARGET]
+    X_test  = test[FEATURES]
+    y_test  = test[TARGET]
+
+    if len(X_test) < 10:
+        return None
+
+    # ── Train calibrated model on train set ───────────────────────────────
+    neg = (y_train == 0).sum()
+    pos = (y_train == 1).sum()
+    spw = neg / pos if pos > 0 else 1
+
+    base_model = XGBClassifier(
+        n_estimators     = 200,
+        max_depth        = 3,
+        learning_rate    = 0.05,
+        scale_pos_weight = spw,
+        eval_metric      = "logloss",
+        random_state     = 42,
+        verbosity        = 0,
+    )
+    base_model.fit(X_train, y_train)
+
+    platt_model = CalibratedClassifierCV(
+        XGBClassifier(
+            n_estimators     = 200,
+            max_depth        = 3,
+            learning_rate    = 0.05,
+            scale_pos_weight = spw,
+            eval_metric      = "logloss",
+            random_state     = 42,
+            verbosity        = 0,
+        ),
+        cv=3, method="sigmoid"
+    )
+    platt_model.fit(X_train, y_train)
+
+    # ── Generate signals on test set ──────────────────────────────────────
+    proba = platt_model.predict_proba(X_test)[:, 1]
+
+    # ── Estimate win/loss ratio from train set for Kelly ──────────────────
+    train_proba  = platt_model.predict_proba(X_train)[:, 1]
+    train_pred   = (train_proba > 0.5).astype(int)
+    train_actual = y_train.values
+
+    # NY return = close - open, signed by direction
+    # Positive if continuation, negative if reversal
+    train_ny_return = np.where(
+        train["london_bullish"] == 1,
+        train["ny_close"] - train["ny_open"],
+        train["ny_open"] - train["ny_close"],
+    )
+
+    correct_mask   = train_pred == train_actual
+    winners        = np.abs(train_ny_return[correct_mask])
+    losers         = np.abs(train_ny_return[~correct_mask])
+
+    avg_win  = winners.mean() if len(winners) > 0 else 1
+    avg_loss = losers.mean()  if len(losers)  > 0 else 1
+    b        = avg_win / avg_loss if avg_loss > 0 else 1
+
+    # ── Build trade log ───────────────────────────────────────────────────
+    trades = []
+
+    for i, (idx, row) in enumerate(test.iterrows()):
+        p = proba[i]
+
+        # Only trade when model has conviction above threshold
+        threshold = 0.55
+        if p < threshold:
+            continue
+
+        # Direction — follow London if continuation predicted
+        london_bull = row["london_bullish"] == 1
+        go_long     = london_bull  # continuation = follow London
+
+        # Actual NY return (points)
+        ny_return_raw = row["ny_close"] - row["ny_open"]
+        # Signed return from our position direction
+        trade_return = ny_return_raw if go_long else -ny_return_raw
+
+        # ── Fixed sizing — 1 unit per trade ──────────────────────────────
+        fixed_return = trade_return
+
+        # ── Kelly sizing ──────────────────────────────────────────────────
+        kelly_f = max(0, p - (1 - p) / b)
+        kelly_f = min(kelly_f, 0.25)  # cap at 25% to avoid overbetting
+        kelly_return = trade_return * kelly_f
+
+        trades.append({
+            "date":          idx,
+            "probability":   p,
+            "direction":     "Long" if go_long else "Short",
+            "london_bull":   london_bull,
+            "ny_return":     ny_return_raw,
+            "trade_return":  trade_return,
+            "fixed_return":  fixed_return,
+            "kelly_f":       kelly_f,
+            "kelly_return":  kelly_return,
+            "correct":       trade_return > 0,
+        })
+
+    if len(trades) < 5:
+        return None
+
+    trade_df = pd.DataFrame(trades).set_index("date")
+
+    # ── Performance metrics ───────────────────────────────────────────────
+    def compute_metrics(returns: pd.Series, label: str) -> dict:
+        cumulative    = (1 + returns / returns.abs().mean()).cumprod()
+        total_return  = cumulative.iloc[-1] - 1
+        n_trades      = len(returns)
+        win_rate      = (returns > 0).mean()
+        avg_win       = returns[returns > 0].mean() if (returns > 0).any() else 0
+        avg_loss      = returns[returns < 0].mean() if (returns < 0).any() else 0
+        rr_ratio      = abs(avg_win / avg_loss) if avg_loss != 0 else 0
+
+        # Annualised Sharpe (assume 252 trading days)
+        daily_mean    = returns.mean()
+        daily_std     = returns.std()
+        sharpe        = (daily_mean / daily_std * np.sqrt(252)
+                         if daily_std > 0 else 0)
+
+        # Max drawdown
+        roll_max      = cumulative.cummax()
+        drawdown      = (cumulative - roll_max) / roll_max
+        max_drawdown  = drawdown.min()
+
+        # Calmar ratio
+        ann_return    = total_return * (252 / n_trades)
+        calmar        = (ann_return / abs(max_drawdown)
+                         if max_drawdown != 0 else 0)
+
+        return {
+            "label":        label,
+            "n_trades":     n_trades,
+            "win_rate":     win_rate,
+            "avg_win":      avg_win,
+            "avg_loss":     avg_loss,
+            "rr_ratio":     rr_ratio,
+            "total_return": total_return,
+            "sharpe":       sharpe,
+            "max_drawdown": max_drawdown,
+            "calmar":       calmar,
+            "cumulative":   cumulative,
+        }
+
+    fixed_metrics  = compute_metrics(trade_df["fixed_return"],  "Fixed Sizing")
+    kelly_metrics  = compute_metrics(trade_df["kelly_return"],  "Kelly Sizing")
+
+    return {
+        "pair":          pair_name,
+        "trade_df":      trade_df,
+        "fixed_metrics": fixed_metrics,
+        "kelly_metrics": kelly_metrics,
+        "b":             b,
+        "threshold":     threshold,
+    }
+
 def analyse_pair(pair_name: str, ticker: str) -> dict:
     """Run all conditional probability tests for one pair."""
     print(f"  Fetching {pair_name} ({ticker})...", end=" ", flush=True)
@@ -895,6 +1087,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict:
     shap_results = run_shap_analysis(df_features, pair_name)
     cal_results = run_calibration_analysis(df_features, pair_name)
     garch_results = run_garch_analysis(df_features, hourly, pair_name)
+    backtest_results = run_backtest(df_features, pair_name)
 
     return {
         "Pair":                   pair_name,
@@ -951,7 +1144,7 @@ def analyse_pair(pair_name: str, ticker: str) -> dict:
         "OOS Test T3 reversal rate":      oos["Test"]["T3 reversal rate"],
         "OOS Test T3 p":                  f"{oos['Test']['T3 p']:.2e}",
         "OOS Test T3 V":                  f"{oos['Test']['T3 V']:.3f}" if oos['Test']['T3 V'] else "N/A",
-    }, df_features, lr_results, cv_results, xgb_results, shap_results, cal_results, garch_results
+    }, df_features, lr_results, cv_results, xgb_results, shap_results, cal_results, garch_results, backtest_results
 
 def run_oos_validation(df: pd.DataFrame, train_pct: float = 0.7) -> dict:
 
@@ -1043,22 +1236,23 @@ if __name__ == "__main__":
     print(f"  Lookback: {LOOKBACK_DAYS} days | Significance threshold: p < 0.05")
     print("="*65 + "\n")
 
-    results          = []
-    features         = {}
-    lr_results_all   = []
-    cv_results_all   = []
-    xgb_results_all  = []
-    shap_results_all = []
-    cal_results_all  = []
+    results           = []
+    features          = {}
+    lr_results_all    = []
+    cv_results_all    = []
+    xgb_results_all   = []
+    shap_results_all  = []
+    cal_results_all   = []
     garch_results_all = []
+    backtest_results_all = []
 
     for pair_name, ticker in PAIRS.items():
         result = analyse_pair(pair_name, ticker)
         if result is not None:
             stats, df_features, lr_result, cv_result, xgb_result, \
-            shap_result, cal_result, garch_result = result
+            shap_result, cal_result, garch_result, backtest_result = result
             results.append(stats)
-            features[pair_name]        = df_features
+            features[pair_name]       = df_features
             lr_results_all.append(lr_result)
             cv_results_all.append(cv_result)
             xgb_results_all.append(xgb_result)
@@ -1066,6 +1260,8 @@ if __name__ == "__main__":
             cal_results_all.append(cal_result)
             if garch_result is not None:
                 garch_results_all.append(garch_result)
+            if backtest_result is not None:
+                backtest_results_all.append(backtest_result)
 
 
     if not results:
@@ -1574,6 +1770,109 @@ for r in garch_results_all:
 
     plt.tight_layout()
     filename = f"garch_{r['pair'].replace('/', '_')}.png"
+    plt.savefig(filename, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {filename}")
+
+
+
+print("\n" + "="*65)
+print("  BACKTEST RESULTS")
+print("="*65)
+
+# ── Summary table ─────────────────────────────────────────────────────────────
+print("\n  FIXED SIZING")
+fixed_summary = []
+for r in backtest_results_all:
+    m = r["fixed_metrics"]
+    fixed_summary.append({
+        "Pair":         r["pair"],
+        "N Trades":     m["n_trades"],
+        "Win Rate":     f"{m['win_rate']*100:.1f}%",
+        "Avg Win":      f"{m['avg_win']:.5f}",
+        "Avg Loss":     f"{m['avg_loss']:.5f}",
+        "R:R":          f"{m['rr_ratio']:.2f}",
+        "Sharpe":       f"{m['sharpe']:.2f}",
+        "Max DD":       f"{m['max_drawdown']*100:.1f}%",
+        "Calmar":       f"{m['calmar']:.2f}",
+    })
+print(tabulate(pd.DataFrame(fixed_summary), headers="keys",
+               tablefmt="rounded_outline", showindex=False))
+
+print("\n  KELLY SIZING")
+kelly_summary = []
+for r in backtest_results_all:
+    m = r["kelly_metrics"]
+    kelly_summary.append({
+        "Pair":         r["pair"],
+        "N Trades":     m["n_trades"],
+        "Win Rate":     f"{m['win_rate']*100:.1f}%",
+        "Sharpe":       f"{m['sharpe']:.2f}",
+        "Max DD":       f"{m['max_drawdown']*100:.1f}%",
+        "Calmar":       f"{m['calmar']:.2f}",
+        "Avg Kelly F":  f"{r['trade_df']['kelly_f'].mean():.3f}",
+    })
+print(tabulate(pd.DataFrame(kelly_summary), headers="keys",
+               tablefmt="rounded_outline", showindex=False))
+
+# ── Equity curves ─────────────────────────────────────────────────────────────
+print("\n  Generating equity curve plots...")
+
+for r in backtest_results_all:
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+    fig.suptitle(f"Backtest — {r['pair']} | "
+                 f"Threshold: {r['threshold']} | "
+                 f"Win/Loss Ratio (b): {r['b']:.2f}",
+                 fontsize=12, fontweight="bold")
+
+    # ── Equity curves ─────────────────────────────────────────────────────
+    axes[0, 0].plot(r["fixed_metrics"]["cumulative"].values,
+                    color="#38bdf8", linewidth=2, label="Fixed")
+    axes[0, 0].plot(r["kelly_metrics"]["cumulative"].values,
+                    color="#fb923c", linewidth=2, label="Kelly")
+    axes[0, 0].axhline(y=1, color="white", linestyle="--", alpha=0.3)
+    axes[0, 0].set_title("Equity Curve")
+    axes[0, 0].set_ylabel("Cumulative Return")
+    axes[0, 0].legend()
+    axes[0, 0].grid(alpha=0.2)
+
+    # ── Drawdown ──────────────────────────────────────────────────────────
+    for metrics, color, label in [
+        (r["fixed_metrics"], "#38bdf8", "Fixed"),
+        (r["kelly_metrics"], "#fb923c", "Kelly"),
+    ]:
+        cum   = metrics["cumulative"]
+        roll  = cum.cummax()
+        dd    = (cum - roll) / roll * 100
+        axes[0, 1].fill_between(range(len(dd)), dd, 0,
+                                alpha=0.4, color=color, label=label)
+    axes[0, 1].set_title("Drawdown %")
+    axes[0, 1].set_ylabel("Drawdown %")
+    axes[0, 1].legend()
+    axes[0, 1].grid(alpha=0.2)
+
+    # ── Trade returns distribution ─────────────────────────────────────────
+    axes[1, 0].hist(r["trade_df"]["trade_return"],
+                    bins=20, color="#a78bfa", alpha=0.7, edgecolor="white")
+    axes[1, 0].axvline(x=0, color="white", linestyle="--", alpha=0.5)
+    axes[1, 0].set_title("Trade Return Distribution")
+    axes[1, 0].set_xlabel("Return (points)")
+    axes[1, 0].set_ylabel("Frequency")
+    axes[1, 0].grid(alpha=0.2)
+
+    # ── Probability distribution of taken trades ───────────────────────────
+    axes[1, 1].hist(r["trade_df"]["probability"],
+                    bins=15, color="#f472b6", alpha=0.7, edgecolor="white")
+    axes[1, 1].axvline(x=r["threshold"], color="white",
+                       linestyle="--", alpha=0.5, label=f"Threshold {r['threshold']}")
+    axes[1, 1].set_title("Model Probability Distribution (Taken Trades)")
+    axes[1, 1].set_xlabel("Calibrated Probability")
+    axes[1, 1].set_ylabel("Frequency")
+    axes[1, 1].legend()
+    axes[1, 1].grid(alpha=0.2)
+
+    plt.tight_layout()
+    filename = f"backtest_{r['pair'].replace('/', '_')}.png"
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"  Saved: {filename}")
