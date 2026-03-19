@@ -903,7 +903,9 @@ def run_backtest(df_features: pd.DataFrame, pair_name: str) -> dict:
         go_long     = london_bull  # continuation = follow London
 
         # Actual NY return (points)
-        ny_return_raw = row["ny_close"] - row["ny_open"]
+        ny_return_raw = (row["ny_close"] - row["ny_open"]) / row["ny_open"]
+        if abs(ny_return_raw) > 0.05:  # filter returns > 5% as likely data errors
+            continue
         # Signed return from our position direction
         trade_return = ny_return_raw if go_long else -ny_return_raw
 
@@ -912,7 +914,7 @@ def run_backtest(df_features: pd.DataFrame, pair_name: str) -> dict:
 
         # ── Kelly sizing ──────────────────────────────────────────────────
         kelly_f = max(0, p - (1 - p) / b)
-        kelly_f = min(kelly_f, 0.25)  # cap at 25% to avoid overbetting
+        kelly_f = min(kelly_f, 0.1)  # cap at 25% to avoid overbetting
         kelly_return = trade_return * kelly_f
 
         trades.append({
@@ -935,7 +937,7 @@ def run_backtest(df_features: pd.DataFrame, pair_name: str) -> dict:
 
     # ── Performance metrics ───────────────────────────────────────────────
     def compute_metrics(returns: pd.Series, label: str) -> dict:
-        cumulative    = (1 + returns / returns.abs().mean()).cumprod()
+        cumulative    = (1 + returns).cumprod()
         total_return  = cumulative.iloc[-1] - 1
         n_trades      = len(returns)
         win_rate      = (returns > 0).mean()
@@ -955,7 +957,7 @@ def run_backtest(df_features: pd.DataFrame, pair_name: str) -> dict:
         max_drawdown  = drawdown.min()
 
         # Calmar ratio
-        ann_return    = total_return * (252 / n_trades)
+        ann_return   = (1 + total_return) ** (252 / n_trades) - 1
         calmar        = (ann_return / abs(max_drawdown)
                          if max_drawdown != 0 else 0)
 
@@ -971,6 +973,7 @@ def run_backtest(df_features: pd.DataFrame, pair_name: str) -> dict:
             "max_drawdown": max_drawdown,
             "calmar":       calmar,
             "cumulative":   cumulative,
+            "ann_return":   ann_return,
         }
 
     fixed_metrics  = compute_metrics(trade_df["fixed_return"],  "Fixed Sizing")
@@ -1262,7 +1265,6 @@ if __name__ == "__main__":
                 garch_results_all.append(garch_result)
             if backtest_result is not None:
                 backtest_results_all.append(backtest_result)
-
 
     if not results:
         print("No data retrieved. Check your internet connection.")
@@ -1583,7 +1585,6 @@ for r in shap_results_all:
     filename = f"shap_{r['pair'].replace('/', '_')}.png"
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  Saved: {filename}")
 
 print("\n  SHAP dependence plot for top feature across all pairs...")
 
@@ -1612,7 +1613,6 @@ for r in shap_results_all:
     filename = f"shap_dependence_{r['pair'].replace('/', '_')}.png"
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  Saved: {filename}")
     
 
 print("\n" + "="*65)
@@ -1676,7 +1676,6 @@ for r in cal_results_all:
     filename = f"calibration_{r['pair'].replace('/', '_')}.png"
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  Saved: {filename}")
 
 
 print("\n" + "="*65)
@@ -1772,7 +1771,6 @@ for r in garch_results_all:
     filename = f"garch_{r['pair'].replace('/', '_')}.png"
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  Saved: {filename}")
 
 
 
@@ -1789,6 +1787,7 @@ for r in backtest_results_all:
         "Pair":         r["pair"],
         "N Trades":     m["n_trades"],
         "Win Rate":     f"{m['win_rate']*100:.1f}%",
+        "Ann Return":   f"{m['ann_return']*100:.1f}",
         "Avg Win":      f"{m['avg_win']:.5f}",
         "Avg Loss":     f"{m['avg_loss']:.5f}",
         "R:R":          f"{m['rr_ratio']:.2f}",
@@ -1807,6 +1806,7 @@ for r in backtest_results_all:
         "Pair":         r["pair"],
         "N Trades":     m["n_trades"],
         "Win Rate":     f"{m['win_rate']*100:.1f}%",
+        "Ann Return":   f"{m['ann_return']*100:.1f}",
         "Sharpe":       f"{m['sharpe']:.2f}",
         "Max DD":       f"{m['max_drawdown']*100:.1f}%",
         "Calmar":       f"{m['calmar']:.2f}",
@@ -1875,9 +1875,7 @@ for r in backtest_results_all:
     filename = f"backtest_{r['pair'].replace('/', '_')}.png"
     plt.savefig(filename, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  Saved: {filename}")
 
     # ── Save to CSV ───────────────────────────────────────────────────────────
     out_path = "session_significance_results.csv"
     df_results.to_csv(out_path, index=False)
-    print(f"  Full results saved to: {out_path}\n")

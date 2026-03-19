@@ -23,3 +23,24 @@ What we're measuring:
     > Number of trades - if there are too few trades, the results are not meaningul
 
 > Given our prior tests (weak CV edge, poor positive fold rates, majority class prediction) we should not expect a profitable backtest.
+
+
+> We had an error with our backtesting.
+    > It was using raw points instead of % moves... 
+        > bad with pairs like jpy, and led to divide by close to 0 in some cases which meant that the return/loss went exponential...
+        > Sharpe ratio came out as 7-12... insane and showed likely error.
+        > Win rate 65-80% - changed 'cumulative' by removing the absolute mean function.
+            > This was artificially inflating the Sharpe and cumulative return.
+        > We also filter out obviously bad data (returns greater than 5% likely errors):
+            if abs(ny_return_raw) > 0.05:
+                continue
+
+        > We added in a print statement to show what the win loss ratio (b) is for each pair.
+            > When we found b was between 1.4 and 2 across the pairs:
+                > winners 1.4-2x larger than losers.
+                    > Using these values along with a typical probability of 0.57, we find that we will usually hit our 0.25 cap on almost every trade.
+                        > Therefore we lower the cap to 10%... betting 25% capital on every trade is too aggressive.
+
+    > To fix Sharpe ratio being abnormally high:
+        > Adjust for only 70 trades across short period of time.
+        > We could do this, but because sample size is small the significance of the results is questionable anyway.
